@@ -69,8 +69,18 @@ sync_once() {
     }
     update_url="$(jsonfilter -i "$RESP" -e '@.update_url' 2>/dev/null || true)"
     if [ -n "$update_url" ]; then
+        # only ever execute update scripts served by OUR dashboard; the token
+        # also auths the download so a 3rd party can't serve us a payload
+        case "$update_url" in
+            "${DASHBOARD_URL%/}"/*) ;;
+            *) warn "auto-update refused: $update_url not under $DASHBOARD_URL"; update_url="" ;;
+        esac
+    fi
+    if [ -n "$update_url" ]; then
         log "auto-update requested via sync, downloading $update_url"
-        if curl $INSECURE -fsSL --max-time 30 -o /tmp/agent-update.sh "$update_url"; then
+        if curl $INSECURE -fsSL --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
+                -o /tmp/agent-update.sh "$update_url"; then
+            # procd respawns us after exit; the update script also restarts the service
             sh /tmp/agent-update.sh >/dev/null 2>&1 &
             exit 0
         else

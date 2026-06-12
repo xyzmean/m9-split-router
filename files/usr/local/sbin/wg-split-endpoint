@@ -57,24 +57,27 @@ wait_handshake() {
 }
 
 # bring up a candidate and curl the probe target through it; echo "ms mtu", or fail
-probe() {  # host port pubkey tier  -> prints integer ms on success
-    # Determine base MTU
+probe() {  # host port pubkey tier  -> prints "ms mtu" on success
+    # Base MTU: WAN minus WG overhead (busybox grep has no -P; use sed/awk)
     _wan_if=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -1)
-    _wan_mtu=$(ip link show "$_wan_if" 2>/dev/null | grep -oP 'mtu \K[0-9]+' || echo 1500)
+    _wan_mtu=$(ip link show "$_wan_if" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p' | head -1)
+    _wan_mtu="${_wan_mtu:-1500}"
     _is_pppoe=0
     [ "$(uci -q get network.wan.proto 2>/dev/null)" = "pppoe" ] && _is_pppoe=1
     echo "$_wan_if" | grep -q pppoe && _is_pppoe=1
-    
+
     _base_mtu=$((_wan_mtu - 80))
     [ "$_is_pppoe" = "1" ] && [ "$_wan_mtu" -gt 1492 ] && _base_mtu=$((1492 - 80))
     [ "$4" = "2" ] && _base_mtu=$((_base_mtu - 40))
 
     set_candidate "$1" "$2" "$3" "$_base_mtu" || return 1
     wait_handshake || return 1
-    
-    # Try MTU end-to-end
-    _ip=$(echo "$PROBE_URL" | grep -oP '://\K[^:/]+' || echo "10.8.0.1")
-    if ! ping -c 1 -W 1 -s $((_base_mtu - 28)) -I "$VPN_IFACE" "$_ip" >/dev/null 2>&1; then
+
+    # MTU sanity: ping the mesh gateway (inner IP — always answers, unlike
+    # arbitrary probe hosts) with a payload sized to the candidate MTU.
+    _gw="$(echo "${DASHBOARD_URL:-}" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+    _gw="${_gw:-10.8.0.1}"
+    if ! ping -c 1 -W 2 -s $((_base_mtu - 28)) -I "$VPN_IFACE" "$_gw" >/dev/null 2>&1; then
         _base_mtu=1280
         set_candidate "$1" "$2" "$3" "$_base_mtu" || return 1
         wait_handshake || return 1

@@ -116,7 +116,9 @@ rm -f /etc/nftables.d/31-wg-split-policy.nft
 cp "$SRC/files/etc/nftables.d/30-wg-split.nft" /etc/nftables.d/
 cp "$SRC/files/etc/init.d/m9-rtr-agent" /etc/init.d/m9-rtr-agent
 chmod +x /etc/init.d/m9-rtr-agent
-echo "$(date +%Y%m%d)" > /etc/wg-split/VERSION
+# repo VERSION is the source of truth — the dashboard compares the agent's
+# reported version against it to decide when to push an auto-update
+cp "$SRC/VERSION" /etc/wg-split/VERSION 2>/dev/null || date +%Y%m%d > /etc/wg-split/VERSION
 
 # substitute the static conf placeholders
 sed -e "s#@@VPN_IFACE@@#$VPNIF#g" -e "s#@@WG_SRC_IP@@#$WG_SRC_IP#g" \

@@ -179,13 +179,15 @@ mkdir -p "$(dirname "$DNSMASQ_NFTSET_FILE")"
     for d in $DIRECT_DOMAINS; do echo "nftset=/$d/4#inet#fw4#$DIRECT_SET"; done
 } > "$DNSMASQ_NFTSET_FILE"
 
-# Setup local split.local redirect mapping to the dashboard
+# split.local -> dashboard portal. dnsmasq address=/name/VALUE needs an IP;
+# writing a hostname here would make dnsmasq refuse its whole config (DNS down),
+# so only map when the dashboard URL host is a literal IPv4.
 DURL="$(grep -i 'DASHBOARD_URL=' /etc/wg-split/wg-split.conf | cut -d'"' -f2 || true)"
-if [ -n "$DURL" ]; then
-    DHOST="$(echo "$DURL" | sed -E 's#https?://([^:/]+).*#\1#')"
-    if [ -n "$DHOST" ]; then
-        echo "address=/split.local/$DHOST" > "$(dirname "$DNSMASQ_NFTSET_FILE")/wg-split-portal.conf"
-    fi
+DHOST="$(echo "$DURL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+if echo "$DHOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "address=/split.local/$DHOST" > "$(dirname "$DNSMASQ_NFTSET_FILE")/wg-split-portal.conf"
+else
+    rm -f "$(dirname "$DNSMASQ_NFTSET_FILE")/wg-split-portal.conf"
 fi
 
 # ---- 4. entry point: pin a specific candidate; leave auto to boot/failover --
