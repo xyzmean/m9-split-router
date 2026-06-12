@@ -1,0 +1,15 @@
+name: Notify Core Repo
+on:
+  push:
+    branches: [ "master", "main" ]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Core Update
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          repository: xyzmean/m9-core
+          event-type: update-submodules
