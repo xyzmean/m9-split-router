@@ -56,36 +56,47 @@ zapret_running() {
     (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[n]fqws'
 }
 
+# Heavy telemetry (nft set dumps, list file counts, zapret probes) — built by
+# sync_once only every TELEMETRY_EVERY-th poll; the dashboard carries the last
+# reported values over in between. Keeps the steady-state sync cheap.
+telemetry_fields() {
+    _zap_av=0; zapret_available && _zap_av=1
+    _zap_run=0; zapret_running && _zap_run=1
+    printf ',"zapret_available":%s,"zapret_enabled":%s,"zapret_running":%s' \
+           "$(json_bool "$_zap_av")" "$(json_bool "${ZAPRET_ENABLED:-0}")" "$(json_bool "$_zap_run")"
+    printf ',"ipsum_nft_count":%s,"ru_nft_count":%s,"nozapret_nft_count":%s' \
+           "$(set_count "$IPSUM_TABLE" "$IPSUM_SET")" \
+           "$(set_count "$RU_TABLE" "$RU_SET")" \
+           "$(set_count "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET")"
+    printf ',"ipsum_list_count":%s,"ru_list_count":%s,"mem_total_kb":%s,"mem_available_kb":%s' \
+           "$(list_count "$IPSUM_FILE")" "$(list_count "$RU_FILE")" \
+           "$(mem_kb MemTotal)" "$(mem_kb MemAvailable)"
+}
+
 build_status() {
     _ver="$(cat /etc/wg-split/VERSION 2>/dev/null || echo dev)"
     _up="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
     _wan="$(ip -4 -o addr show 2>/dev/null | awk '/ wan@| wan /{print $4}' | cut -d/ -f1 | head -1)"
-    _hsage="$(wg_handshake_age)"
-    _rx="$(wgshow "$VPN_IFACE" transfer | awk 'NR==1{print $2}')"; _rx="${_rx:-0}"
-    _tx="$(wgshow "$VPN_IFACE" transfer | awk 'NR==1{print $3}')"; _tx="${_tx:-0}"
+    # one `wg dump` gives handshake + transfer in a single spawn (fields 5/6/7
+    # of the first peer line = latest-handshake, rx, tx)
+    set -- $(wgshow "$VPN_IFACE" dump 2>/dev/null | awk 'NR==2{print $5, $6, $7}') 0 0 0
+    _hs="$1"; _rx="$2"; _tx="$3"
+    _hsage=999999
+    [ "${_hs:-0}" -gt 0 ] 2>/dev/null && _hsage=$(( $(date +%s) - _hs ))
     _err=""; [ "$(read_state)" = "wan" ] && _err="vpn-down-fallback-wan"
-    _zap_av=0; zapret_available && _zap_av=1
-    _zap_run=0; zapret_running && _zap_run=1
-    _ipsum_nft="$(set_count "$IPSUM_TABLE" "$IPSUM_SET")"
-    _ru_nft="$(set_count "$RU_TABLE" "$RU_SET")"
-    _noz_nft="$(set_count "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET")"
-    _ipsum_list="$(list_count "$IPSUM_FILE")"
-    _ru_list="$(list_count "$RU_FILE")"
-    _mem_total="$(mem_kb MemTotal)"
-    _mem_avail="$(mem_kb MemAvailable)"
     printf '{"version":"%s","uptime":%s,"wan_ip":"%s","lan_if":"%s","wg_if":"%s",' \
            "$_ver" "$_up" "${_wan:-}" "$LAN_IFACE" "$VPN_IFACE"
     _entry="$(cat "${CHOSEN_FILE:-/var/run/wg-split-endpoint}" 2>/dev/null)"
     _mtu="$(cat /var/run/wg-split-mtu 2>/dev/null || echo 1280)"
+    # slim=1: the dashboard omits policy+endpoints unless our applied rev is
+    # stale, the portal host moved, or we ask for a full reply (lost endpoints)
+    _need_full=0
+    [ -n "$(jsonfilter -i "$POLICY_JSON" -e '@.endpoints[0].name' 2>/dev/null)" ] || _need_full=1
+    _portal="$(jsonfilter -i "$POLICY_JSON" -e '@.portal_host' 2>/dev/null)"
     printf '"applied_rev":%s,"handshake_age":%s,"rx":%s,"tx":%s,"entry":"%s","mtu":%s,"error":"%s",' \
            "$(applied_rev)" "$_hsage" "$_rx" "$_tx" "${_entry:-}" "$_mtu" "$_err"
-    printf '"zapret_available":%s,"zapret_enabled":%s,"zapret_running":%s,' \
-           "$(json_bool "$_zap_av")" "$(json_bool "${ZAPRET_ENABLED:-0}")" "$(json_bool "$_zap_run")"
-    printf '"ipsum_nft_count":%s,"ru_nft_count":%s,"nozapret_nft_count":%s,' \
-           "$_ipsum_nft" "$_ru_nft" "$_noz_nft"
-    printf '"ipsum_list_count":%s,"ru_list_count":%s,"mem_total_kb":%s,"mem_available_kb":%s,' \
-           "$_ipsum_list" "$_ru_list" "$_mem_total" "$_mem_avail"
-    printf '"devices":%s}' "$(devices_json)"
+    printf '"slim":1,"need_full":%s,"portal_host":"%s"%s%s}' \
+           "$_need_full" "$_portal" "$TELEMETRY_FIELD" "$DEV_FIELD"
 }
 
 # Boot-time endpoint autoselect (once): probe candidates and switch to the best.
@@ -98,7 +109,22 @@ boot_select() {
     /usr/local/sbin/wg-split-endpoint --auto >/dev/null 2>&1 || warn "boot autoselect found no endpoint"
 }
 
+# Devices ride along only when the lease file changed; heavy telemetry and a
+# devices refresh go every TELEMETRY_EVERY-th sync (covers dashboard restarts).
+TELEMETRY_EVERY=10
+DEV_SENT_HASH="-"
+SYNC_N=0
+
 sync_once() {
+    SYNC_N=$((SYNC_N + 1))
+    _periodic=0; [ $((SYNC_N % TELEMETRY_EVERY)) = 1 ] && _periodic=1
+    TELEMETRY_FIELD=""
+    [ "$_periodic" = 1 ] && TELEMETRY_FIELD="$(telemetry_fields)"
+    _devhash="$(md5sum /tmp/dhcp.leases 2>/dev/null | cut -d' ' -f1)"
+    DEV_FIELD=""
+    if [ "$_devhash" != "$DEV_SENT_HASH" ] || [ "$_periodic" = 1 ]; then
+        DEV_FIELD=",\"devices\":$(devices_json)"
+    fi
     body="$(build_status)"
     if ! curl $INSECURE -fsS --max-time 20 \
             -H "X-Router-Token: $ROUTER_TOKEN" \
@@ -111,6 +137,10 @@ sync_once() {
         warn "sync rejected: $(jsonfilter -i "$RESP" -e '@.error' 2>/dev/null || echo '?')"
         return 1
     }
+    [ -n "$DEV_FIELD" ] && DEV_SENT_HASH="$_devhash"
+    # the dashboard can retune our poll interval centrally (rtr_sync_interval)
+    _iv="$(jsonfilter -i "$RESP" -e '@.interval' 2>/dev/null)"
+    case "$_iv" in (*[!0-9]*|"") ;; (*) [ "$_iv" -ge 10 ] && [ "$_iv" -le 3600 ] && INTERVAL="$_iv" ;; esac
     update_url="$(jsonfilter -i "$RESP" -e '@.update_url' 2>/dev/null || true)"
     if [ -n "$update_url" ]; then
         # only ever execute update scripts served by OUR dashboard; the token
@@ -138,6 +168,12 @@ sync_once() {
     cur_portal="$(jsonfilter -i "$POLICY_JSON" -e '@.portal_host' 2>/dev/null)"
     new_portal="$(jsonfilter -i "$RESP" -e '@.portal_host' 2>/dev/null)"
     if [ "$new" != "$cur" ] || [ -z "$has_endpoints" ] || [ "$new_portal" != "$cur_portal" ]; then
+        # slim replies carry no policy — only persist a full one (the server
+        # sends it whenever our applied_rev/portal is stale or need_full is set)
+        if [ -z "$(jsonfilter -i "$RESP" -e '@.policy.mode' 2>/dev/null)" ]; then
+            warn "rev $cur -> $new but reply has no policy; waiting for full sync"
+            return 0
+        fi
         log "policy rev $cur -> $new (or endpoints/portal changed); applying"
         cp "$RESP" "$POLICY_JSON"
         /usr/local/sbin/wg-split-apply >/dev/null 2>&1 \
