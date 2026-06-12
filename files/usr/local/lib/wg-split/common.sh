@@ -71,8 +71,12 @@ all_src_cidrs() {
     else echo "$LAN_CIDR"; fi
 }
 
+# `wg show` for either tool — AmneziaWG ifaces answer to `awg`, plain WG to `wg`.
+# The wrong tool errors with no output, so concatenating is safe.
+wgshow() { awg show "$@" 2>/dev/null; wg show "$@" 2>/dev/null; }
+
 # Live VPN tunnel handshake age in seconds (huge number if never), for status.
 wg_handshake_age() {
-    _hs=$(wg show "$VPN_IFACE" latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
+    _hs=$(wgshow "$VPN_IFACE" latest-handshakes | awk 'NR==1{print $2}')
     [ -n "$_hs" ] && [ "$_hs" -gt 0 ] 2>/dev/null && echo $(( $(date +%s) - _hs )) || echo 999999
 }

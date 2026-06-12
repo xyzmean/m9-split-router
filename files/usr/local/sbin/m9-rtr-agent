@@ -33,8 +33,8 @@ build_status() {
     _up="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
     _wan="$(ip -4 -o addr show 2>/dev/null | awk '/ wan@| wan /{print $4}' | cut -d/ -f1 | head -1)"
     _hsage="$(wg_handshake_age)"
-    _rx="$(wg show "$VPN_IFACE" transfer 2>/dev/null | awk 'NR==1{print $2}')"; _rx="${_rx:-0}"
-    _tx="$(wg show "$VPN_IFACE" transfer 2>/dev/null | awk 'NR==1{print $3}')"; _tx="${_tx:-0}"
+    _rx="$(wgshow "$VPN_IFACE" transfer | awk 'NR==1{print $2}')"; _rx="${_rx:-0}"
+    _tx="$(wgshow "$VPN_IFACE" transfer | awk 'NR==1{print $3}')"; _tx="${_tx:-0}"
     _err=""; [ "$(read_state)" = "wan" ] && _err="vpn-down-fallback-wan"
     printf '{"version":"%s","uptime":%s,"wan_ip":"%s","lan_if":"%s","wg_if":"%s",' \
            "$_ver" "$_up" "${_wan:-}" "$LAN_IFACE" "$VPN_IFACE"
