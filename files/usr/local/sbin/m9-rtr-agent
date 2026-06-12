@@ -1,0 +1,74 @@
+#!/bin/sh
+# m9-rtr-agent — keeps this router's split policy in sync with the M9 dashboard.
+#
+# Every AGENT_INTERVAL it POSTs a status report to $DASHBOARD_URL/api/rtr/sync
+# (auth: X-Router-Token) and receives the current policy + entry-point endpoints.
+# When the policy rev moves, it persists the response to $POLICY_JSON and runs
+# wg-split-apply, which regenerates the nft/dnsmasq layer and routing.
+#
+# Pure busybox: curl + jsonfilter. Runs under procd (see /etc/init.d/m9-rtr-agent).
+set -u
+. /usr/local/lib/wg-split/common.sh
+
+[ -n "${DASHBOARD_URL:-}" ] || die "DASHBOARD_URL not set in $CONF_FILE"
+[ -n "${ROUTER_TOKEN:-}" ]  || die "ROUTER_TOKEN not set in $CONF_FILE"
+INTERVAL="${AGENT_INTERVAL:-30}"
+INSECURE=""; [ "${AGENT_TLS_INSECURE:-1}" = "1" ] && INSECURE="-k"
+SYNC_URL="${DASHBOARD_URL%/}/api/rtr/sync"
+RESP="/tmp/m9-rtr-sync.json"
+
+applied_rev() { [ -r "$POLICY_ENV" ] && . "$POLICY_ENV"; echo "${APPLIED_REV:-0}"; }
+
+# JSON array of current LAN devices from the DHCP lease file: ip/mac/host.
+devices_json() {
+    _f=/tmp/dhcp.leases
+    [ -r "$_f" ] || { echo "[]"; return; }
+    awk '{ printf "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"host\":\"%s\"}",
+                  (NR>1?",":""), $3, $2, ($4=="*"?"":$4) }
+         END { print "" }' "$_f" 2>/dev/null | sed 's/^/[/; s/$/]/'
+}
+
+build_status() {
+    _ver="$(cat /etc/wg-split/VERSION 2>/dev/null || echo dev)"
+    _up="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
+    _wan="$(ip -4 -o addr show 2>/dev/null | awk '/ wan@| wan /{print $4}' | cut -d/ -f1 | head -1)"
+    _hsage="$(wg_handshake_age)"
+    _rx="$(wg show "$VPN_IFACE" transfer 2>/dev/null | awk 'NR==1{print $2}')"; _rx="${_rx:-0}"
+    _tx="$(wg show "$VPN_IFACE" transfer 2>/dev/null | awk 'NR==1{print $3}')"; _tx="${_tx:-0}"
+    _err=""; [ "$(read_state)" = "wan" ] && _err="vpn-down-fallback-wan"
+    printf '{"version":"%s","uptime":%s,"wan_ip":"%s","lan_if":"%s","wg_if":"%s",' \
+           "$_ver" "$_up" "${_wan:-}" "$LAN_IFACE" "$VPN_IFACE"
+    printf '"applied_rev":%s,"handshake_age":%s,"rx":%s,"tx":%s,"error":"%s","devices":%s}' \
+           "$(applied_rev)" "$_hsage" "$_rx" "$_tx" "$_err" "$(devices_json)"
+}
+
+sync_once() {
+    body="$(build_status)"
+    if ! curl $INSECURE -fsS --max-time 20 \
+            -H "X-Router-Token: $ROUTER_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST --data "$body" "$SYNC_URL" -o "$RESP" 2>/dev/null; then
+        warn "sync failed: unreachable $SYNC_URL"
+        return 1
+    fi
+    [ "$(jsonfilter -i "$RESP" -e '@.ok' 2>/dev/null)" = "true" ] || {
+        warn "sync rejected: $(jsonfilter -i "$RESP" -e '@.error' 2>/dev/null || echo '?')"
+        return 1
+    }
+    new="$(jsonfilter -i "$RESP" -e '@.rev' 2>/dev/null)"; new="${new:-0}"
+    cur="$(applied_rev)"
+    if [ "$new" != "$cur" ]; then
+        log "policy rev $cur -> $new; applying"
+        cp "$RESP" "$POLICY_JSON"
+        /usr/local/sbin/wg-split-apply >/dev/null 2>&1 \
+            && log "policy rev $new applied" \
+            || warn "wg-split-apply failed for rev $new"
+    fi
+    return 0
+}
+
+log "m9-rtr-agent up: $SYNC_URL every ${INTERVAL}s (pubkey ${ROUTER_PUBKEY:-?})"
+while :; do
+    sync_once || true
+    sleep "$INTERVAL"
+done

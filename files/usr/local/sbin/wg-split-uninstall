@@ -1,0 +1,71 @@
+#!/bin/sh
+# wg-split-uninstall — full teardown. Removes scripts, hotplug, nft includes,
+# cron entries, runtime state. Does NOT remove the VPN/wgaccess uci interfaces
+# or zapret — those are managed separately.
+
+set -u
+
+LOG_TAG="${LOG_TAG:-wg-split}"
+log() { logger -t "$LOG_TAG" "$*"; }
+
+CONF_FILE="${WG_SPLIT_CONF:-/etc/wg-split/wg-split.conf}"
+# shellcheck disable=SC1090
+[ -r "$CONF_FILE" ] && . "$CONF_FILE"
+
+WG_TABLE="${WG_TABLE:-200}"
+WG_RULE_PRIO="${WG_RULE_PRIO:-999}"
+ANTI_LOOP_PRIO="${ANTI_LOOP_PRIO:-1000}"
+DOH_IPS="${DOH_IPS:-8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112}"
+VPN_IFACE="${VPN_IFACE:-wg0}"
+STATE_FILE="${STATE_FILE:-/var/run/wg-split-state}"
+FAIL_COUNTER_FILE="${FAIL_COUNTER_FILE:-/var/run/wg-split-failcount}"
+
+log "UNINSTALL: removing wg-split"
+
+# 0. Dashboard sync agent (stop before tearing routing down).
+if [ -x /etc/init.d/m9-rtr-agent ]; then
+    /etc/init.d/m9-rtr-agent stop    >/dev/null 2>&1 || true
+    /etc/init.d/m9-rtr-agent disable >/dev/null 2>&1 || true
+fi
+rm -f /etc/init.d/m9-rtr-agent /usr/local/sbin/m9-rtr-agent /usr/local/sbin/wg-split-apply
+
+# 1. Runtime state.
+while ip -4 rule del priority "$WG_RULE_PRIO"   >/dev/null 2>&1; do :; done
+while ip -4 rule del priority "$ANTI_LOOP_PRIO" >/dev/null 2>&1; do :; done
+ip -4 route flush table "$WG_TABLE" >/dev/null 2>&1 || true
+for _ip in $DOH_IPS; do ip -4 route del "$_ip" dev "$VPN_IFACE" >/dev/null 2>&1 || true; done
+
+# 2. Cron.
+if [ -f /etc/crontabs/root ]; then
+    grep -v 'wg-split-' /etc/crontabs/root > /tmp/wg-split-cron.new || true
+    cat /tmp/wg-split-cron.new > /etc/crontabs/root
+    rm -f /tmp/wg-split-cron.new
+    /etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
+# 3. Files.
+rm -f /etc/nftables.d/30-wg-split.nft \
+      /etc/nftables.d/31-wg-split-policy.nft \
+      /etc/nftables.d/30-ru-wg-split.nft \
+      /etc/nftables.d/31-ipsum-wg-split.nft
+rm -f /tmp/dnsmasq.d/wg-split-domains.conf
+/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+rm -f /etc/hotplug.d/iface/93-wg-split-rules \
+      /etc/hotplug.d/iface/94-wg-split-doh-routes
+rm -f /usr/local/sbin/wg-split-watchdog \
+      /usr/local/sbin/wg-split-update-ipsum \
+      /usr/local/sbin/wg-split-update-ru \
+      /usr/local/sbin/wg-split-sync-nozapret \
+      /usr/local/sbin/wg-split-status \
+      /usr/local/sbin/wg-split-failover
+rm -rf /usr/local/lib/wg-split
+rm -f "$STATE_FILE" "$FAIL_COUNTER_FILE" "${FAIL_COUNTER_FILE}.zapret"
+
+# 4. Firewall reload to drop the nft chains/sets.
+/etc/init.d/firewall reload >/dev/null 2>&1 || true
+
+# 5. Self-destruct + config (last so we still execute).
+rm -rf /etc/wg-split
+rm -f /usr/local/sbin/wg-split-disable
+echo "wg-split fully uninstalled."
+rm -f "$0"

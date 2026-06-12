@@ -1,0 +1,49 @@
+#!/bin/sh
+# wg-split-failover — promote backup peer when primary is consistently unhealthy.
+#
+# Triggered by watchdog when failure-counter ≥ PEER_FAILOVER_THRESHOLD.
+# Actions:
+#   1. ifdown primary, ifup backup
+#   2. swap default route in table $WG_TABLE
+#   3. update VPN_IFACE in /etc/wg-split/wg-split.conf (atomic sed-replace)
+#   4. reset failure counter
+
+set -eu
+. /usr/local/lib/wg-split/common.sh
+
+[ "$PEER_FAILOVER_ENABLED" = "1" ] \
+    || { log "failover skipped: PEER_FAILOVER_ENABLED=0"; exit 0; }
+[ -n "$PEER_PRIMARY_IFACE" ] || die "PEER_PRIMARY_IFACE empty"
+[ -n "$PEER_BACKUP_IFACE"  ] || die "PEER_BACKUP_IFACE empty"
+
+# Decide which is current — read state, else fall back to config.
+_current="$VPN_IFACE"
+if [ "$_current" = "$PEER_PRIMARY_IFACE" ]; then
+    _target="$PEER_BACKUP_IFACE"
+else
+    _target="$PEER_PRIMARY_IFACE"
+fi
+
+log "failover: $_current → $_target"
+
+ifup "$_target"   >/dev/null 2>&1 || warn "ifup $_target returned non-zero"
+sleep 3
+
+# Confirm target is up before tearing down the current one.
+if ! ip link show dev "$_target" >/dev/null 2>&1; then
+    die "failover aborted: $_target failed to come up"
+fi
+
+# Reroute table.
+ip -4 route replace default dev "$_target" table "$WG_TABLE"
+
+# Repin DoH IPs through the new uplink.
+for _ip in $DOH_IPS; do pin_route "$_ip" "$_target" ""; done
+
+# Persist by rewriting VPN_IFACE in the conf file.
+sed -i "s|^VPN_IFACE=.*|VPN_IFACE=\"$_target\"|" "$CONF_FILE"
+
+ifdown "$_current" >/dev/null 2>&1 || true
+fail_reset
+write_state "vpn:$_target"
+log "failover complete: now using $_target (persisted to $CONF_FILE)"

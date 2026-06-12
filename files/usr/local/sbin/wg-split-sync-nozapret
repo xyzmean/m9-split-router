@@ -1,0 +1,36 @@
+#!/bin/sh
+# wg-split-sync-nozapret — rebuild zapret's nozapret bypass set from:
+#   ZAPRET_PRIVATES + RU file + IPSUM file
+#
+# Memory-safe: emits one compact `add element { x,y,z }` block, NOT per-line
+# `add element { x }` (which on 240MB routers OOMs at ~38k+ entries).
+
+set -eu
+. /usr/local/lib/wg-split/common.sh
+
+[ "$ZAPRET_ENABLED" = "1" ] || { log "zapret disabled (ZAPRET_ENABLED=0)"; exit 0; }
+
+TMP="/tmp/wg-split-sync-nozapret.$$"
+mkdir -p "$TMP"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+{
+    for p in $ZAPRET_PRIVATES; do echo "$p"; done
+    [ -r "$RU_FILE" ]    && cat "$RU_FILE"    || true
+    [ -r "$IPSUM_FILE" ] && cat "$IPSUM_FILE" || true
+} | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' \
+  | sort -u > "$TMP/all.lst"
+
+count=$(wc -l < "$TMP/all.lst")
+[ "$count" -ge "$ZAPRET_NOZAPRET_MIN" ] \
+    || die "too few entries: $count (need $ZAPRET_NOZAPRET_MIN)"
+
+{
+    printf 'flush set %s %s\n' "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET"
+    printf 'add element %s %s {\n' "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET"
+    awk 'NR > 1 { printf "," } { printf "%s", $0 } END { print "" }' "$TMP/all.lst"
+    printf '}\n'
+} > "$TMP/sync.nft"
+
+nft -f "$TMP/sync.nft" || die "atomic nft sync failed (kept: $TMP/sync.nft)"
+log "nozapret synced: $count entries"

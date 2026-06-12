@@ -1,0 +1,44 @@
+#!/bin/sh
+# wg-split-disable — emergency suspend.
+#
+# Removes ip rules + flushes route table 200 → all LAN traffic flows via WAN.
+# Does NOT remove nft chains/sets, watchdog, cron, scripts. The watchdog will
+# put policy back within 3 minutes unless its cron is removed first.
+#
+# Hardcoded defaults so it works even if /etc/wg-split/wg-split.conf is broken.
+
+set -u
+
+LOG_TAG="${LOG_TAG:-wg-split}"
+log() { logger -t "$LOG_TAG" "$*"; }
+
+# Best-effort source config (don't fail if missing).
+CONF_FILE="${WG_SPLIT_CONF:-/etc/wg-split/wg-split.conf}"
+# shellcheck disable=SC1090
+[ -r "$CONF_FILE" ] && . "$CONF_FILE"
+
+VPN_IFACE="${VPN_IFACE:-wg0}"
+WG_TABLE="${WG_TABLE:-200}"
+WG_RULE_PRIO="${WG_RULE_PRIO:-999}"
+DOH_IPS="${DOH_IPS:-8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112}"
+STATE_FILE="${STATE_FILE:-/var/run/wg-split-state}"
+
+log "DISABLE: tearing down split routing"
+
+while ip -4 rule del priority "$WG_RULE_PRIO" >/dev/null 2>&1; do :; done
+ip -4 route flush table "$WG_TABLE" >/dev/null 2>&1 || true
+
+for _ip in $DOH_IPS; do
+    ip -4 route del "$_ip" dev "$VPN_IFACE" >/dev/null 2>&1 || true
+done
+
+printf 'wan\n' > "$STATE_FILE"
+
+cat <<EOF
+Split routing disabled. Current rules:
+$(ip -4 rule show | sed 's/^/  /')
+
+Watchdog (cron */3 min) will re-enable as long as VPN is healthy.
+To stop watchdog: crontab -l | grep -v wg-split-watchdog | crontab -
+To fully uninstall: wg-split-uninstall
+EOF
