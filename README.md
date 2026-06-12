@@ -45,8 +45,12 @@ with a router token:
   device list (from DHCP leases) — shown in the dashboard.
 - **down:** `{rev, policy, endpoints}`. When the policy `rev` changes, the agent
   writes `/etc/wg-split/policy.json` and runs `wg-split-apply`, which regenerates
-  `/etc/nftables.d/31-wg-split-policy.nft` + the dnsmasq domain sets, switches the
-  entry endpoint if needed, reloads `fw4`/dnsmasq, and re-applies routing.
+  the canonical `/etc/nftables.d/30-wg-split.nft` in place (same chain/set names
+  as the hand-built reference split — `wg_split_endpoint_mark_prerouting`,
+  `wg_split_ipsum_mark_prerouting`) + the dnsmasq domain sets, switches the entry
+  endpoint if needed, reloads `fw4`/dnsmasq, and re-applies routing. The ipsum/RU
+  IP lists (the actual routes) are the reference URLs and refresh daily via cron;
+  in baseline `blocklist` mode the ruleset is byte-identical to the reference.
 
 The router never opens an inbound port — it pulls. The token is per-router and
 rotatable from the dashboard.

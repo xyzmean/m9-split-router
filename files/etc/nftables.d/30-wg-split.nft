@@ -1,10 +1,12 @@
-# wg-split static set definition. Installed at /etc/nftables.d/30-wg-split.nft.
+# wg-split canonical ruleset. Installed at /etc/nftables.d/30-wg-split.nft.
 # fw4 inline-includes this INSIDE `table inet fw4 { ... }` — DO NOT wrap.
 #
-# Only the ipsum set lives here (a large blocklist, populated live by
-# wg-split-update-ipsum / watchdog from IPSUM_NFT_FILE). The vpn/direct sets and
-# all policy chains are regenerated WITH their contents by `wg-split-apply` into
-# 31-wg-split-policy.nft on every dashboard policy change.
+# This is only the install-time SEED (ipsum set, no chains = all-WAN, safe).
+# wg-split-apply REGENERATES this same file from the dashboard policy on first
+# sync, adding the reference chains (wg_split_endpoint_mark_prerouting @ mangle,
+# wg_split_ipsum_mark_prerouting @ mangle+1) so the live ruleset is identical to
+# the hand-built split. The ipsum set is populated live by wg-split-update-ipsum
+# / watchdog (daily refresh).
 
 set wg_split_ipsum_v4 {
     type ipv4_addr

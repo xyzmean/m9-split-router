@@ -17,10 +17,13 @@ ANTI_LOOP_MARK="0x10000"; ANTI_LOOP_MASK="0x10000"; ANTI_LOOP_PRIO="1000"
 WG_ENDPOINTS="@@WG_ENDPOINTS@@"
 DOH_IPS="8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112"
 
-# ---- policy nft sets (definitions in 30-wg-split.nft) ----
+# ---- policy nft sets/chains ----
+# wg-split-apply regenerates the canonical 30-wg-split.nft IN PLACE (same file,
+# same chain names as the hand-built split) so a managed router's ruleset is
+# byte-identical to the reference one.
 VPN_SET="wg_split_vpn_v4"
 DIRECT_SET="wg_split_direct_v4"
-POLICY_NFT_FILE="/etc/nftables.d/31-wg-split-policy.nft"
+POLICY_NFT_FILE="/etc/nftables.d/30-wg-split.nft"
 DNSMASQ_NFTSET_FILE="/tmp/dnsmasq.d/wg-split-domains.conf"
 
 # ---- health ----
