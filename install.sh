@@ -26,6 +26,14 @@ while getopts "c:l:i:u:t:k:w:" o; do case $o in
 [ -f "$CONF" ] && [ -n "$LAN" ] && [ -n "$DURL" ] && [ -n "$TOKEN" ] || {
   echo "usage: $0 -c router-<entry>.conf -l LAN/CIDR -i LANIF -u DASHBOARD_URL -t TOKEN -k PUBKEY [-w wg0]" >&2
   exit 1; }
+
+# Validate format to prevent shell injection via malicious args
+echo "$LAN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' || { echo "LAN must be CIDR" >&2; exit 1; }
+echo "$LANIF" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "LANIF must be alphanumeric" >&2; exit 1; }
+echo "$VPNIF" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "VPNIF must be alphanumeric" >&2; exit 1; }
+echo "$PUBKEY" | grep -qE '^[a-zA-Z0-9+/=]+$' || { echo "PUBKEY must be base64" >&2; exit 1; }
+echo "$TOKEN" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "TOKEN must be alphanumeric" >&2; exit 1; }
+
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 SRC="$(cd "$(dirname "$0")" && pwd)"
 [ -d "$SRC/files" ] || { echo "run from the repo checkout (files/ missing)" >&2; exit 1; }
@@ -33,15 +41,28 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 echo "== m9-split-router install: iface=$VPNIF lan=$LAN via=$LANIF dashboard=$DURL =="
 
 # ---- 1. packages ----------------------------------------------------------
-opkg update >/dev/null 2>&1 || true
-for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg curl nftables-json; do
-    opkg list-installed 2>/dev/null | grep -q "^$p " || opkg install "$p" >/dev/null 2>&1 || \
-        echo "  warn: could not install $p (continuing)"
-done
-# zapret is optional; install if the feed has it, otherwise disable later.
 ZAPRET_OK=1
-opkg list-installed 2>/dev/null | grep -q '^zapret ' || \
-    opkg install zapret luci-app-zapret >/dev/null 2>&1 || ZAPRET_OK=0
+if command -v apk >/dev/null 2>&1; then
+    # Modern OpenWrt (24.10+) uses apk
+    echo "  package manager: apk detected"
+    apk update >/dev/null 2>&1 || true
+    for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg curl nftables-json; do
+        apk info -e "$p" >/dev/null 2>&1 || apk add "$p" >/dev/null 2>&1 || \
+            echo "  warn: could not install $p (continuing)"
+    done
+    apk info -e zapret >/dev/null 2>&1 || \
+        apk add zapret luci-app-zapret >/dev/null 2>&1 || ZAPRET_OK=0
+else
+    # Older OpenWrt uses opkg
+    echo "  package manager: opkg detected"
+    opkg update >/dev/null 2>&1 || true
+    for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg curl nftables-json; do
+        opkg list-installed 2>/dev/null | grep -q "^$p " || opkg install "$p" >/dev/null 2>&1 || \
+            echo "  warn: could not install $p (continuing)"
+    done
+    opkg list-installed 2>/dev/null | grep -q '^zapret ' || \
+        opkg install zapret luci-app-zapret >/dev/null 2>&1 || ZAPRET_OK=0
+fi
 
 # ---- 2. parse the dashboard WG config -------------------------------------
 val() { grep -i "^[[:space:]]*$1[[:space:]]*=" "$CONF" | head -1 | sed 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//'; }
@@ -91,10 +112,13 @@ mkdir -p /etc/wg-split /usr/local/lib/wg-split /usr/local/sbin /etc/nftables.d
 cp "$SRC/files/usr/local/lib/wg-split/common.sh" /usr/local/lib/wg-split/
 cp "$SRC"/files/usr/local/sbin/* /usr/local/sbin/
 chmod +x /usr/local/sbin/wg-split-* /usr/local/sbin/m9-rtr-agent
+rm -f /etc/nftables.d/31-wg-split-policy.nft
 cp "$SRC/files/etc/nftables.d/30-wg-split.nft" /etc/nftables.d/
 cp "$SRC/files/etc/init.d/m9-rtr-agent" /etc/init.d/m9-rtr-agent
 chmod +x /etc/init.d/m9-rtr-agent
-echo "$(date +%Y%m%d)" > /etc/wg-split/VERSION
+# repo VERSION is the source of truth — the dashboard compares the agent's
+# reported version against it to decide when to push an auto-update
+cp "$SRC/VERSION" /etc/wg-split/VERSION 2>/dev/null || date +%Y%m%d > /etc/wg-split/VERSION
 
 # substitute the static conf placeholders
 sed -e "s#@@VPN_IFACE@@#$VPNIF#g" -e "s#@@WG_SRC_IP@@#$WG_SRC_IP#g" \

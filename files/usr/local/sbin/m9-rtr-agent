@@ -13,7 +13,7 @@ set -u
 [ -n "${DASHBOARD_URL:-}" ] || die "DASHBOARD_URL not set in $CONF_FILE"
 [ -n "${ROUTER_TOKEN:-}" ]  || die "ROUTER_TOKEN not set in $CONF_FILE"
 INTERVAL="${AGENT_INTERVAL:-30}"
-INSECURE=""; [ "${AGENT_TLS_INSECURE:-1}" = "1" ] && INSECURE="-k"
+INSECURE=""; [ "${AGENT_TLS_INSECURE:-0}" = "1" ] && INSECURE="-k"
 SYNC_URL="${DASHBOARD_URL%/}/api/rtr/sync"
 RESP="/tmp/m9-rtr-sync.json"
 
@@ -38,8 +38,20 @@ build_status() {
     _err=""; [ "$(read_state)" = "wan" ] && _err="vpn-down-fallback-wan"
     printf '{"version":"%s","uptime":%s,"wan_ip":"%s","lan_if":"%s","wg_if":"%s",' \
            "$_ver" "$_up" "${_wan:-}" "$LAN_IFACE" "$VPN_IFACE"
-    printf '"applied_rev":%s,"handshake_age":%s,"rx":%s,"tx":%s,"error":"%s","devices":%s}' \
-           "$(applied_rev)" "$_hsage" "$_rx" "$_tx" "$_err" "$(devices_json)"
+    _entry="$(cat "${CHOSEN_FILE:-/var/run/wg-split-endpoint}" 2>/dev/null)"
+    _mtu="$(cat /var/run/wg-split-mtu 2>/dev/null || echo 1280)"
+    printf '"applied_rev":%s,"handshake_age":%s,"rx":%s,"tx":%s,"entry":"%s","mtu":%s,"error":"%s","devices":%s}' \
+           "$(applied_rev)" "$_hsage" "$_rx" "$_tx" "${_entry:-}" "$_mtu" "$_err" "$(devices_json)"
+}
+
+# Boot-time endpoint autoselect (once): probe candidates and switch to the best.
+# Runs from the persisted policy.json even before the dashboard is reachable.
+boot_select() {
+    [ "${AUTO_ENDPOINT:-0}" = "1" ] || return 0
+    [ -x /usr/local/sbin/wg-split-endpoint ] || return 0
+    [ -r "$POLICY_JSON" ] || return 0
+    log "boot: autoselecting best endpoint (curl probe)"
+    /usr/local/sbin/wg-split-endpoint --auto >/dev/null 2>&1 || warn "boot autoselect found no endpoint"
 }
 
 sync_once() {
@@ -55,6 +67,27 @@ sync_once() {
         warn "sync rejected: $(jsonfilter -i "$RESP" -e '@.error' 2>/dev/null || echo '?')"
         return 1
     }
+    update_url="$(jsonfilter -i "$RESP" -e '@.update_url' 2>/dev/null || true)"
+    if [ -n "$update_url" ]; then
+        # only ever execute update scripts served by OUR dashboard; the token
+        # also auths the download so a 3rd party can't serve us a payload
+        case "$update_url" in
+            "${DASHBOARD_URL%/}"/*) ;;
+            *) warn "auto-update refused: $update_url not under $DASHBOARD_URL"; update_url="" ;;
+        esac
+    fi
+    if [ -n "$update_url" ]; then
+        log "auto-update requested via sync, downloading $update_url"
+        if curl $INSECURE -fsSL --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
+                -o /tmp/agent-update.sh "$update_url"; then
+            # procd respawns us after exit; the update script also restarts the service
+            sh /tmp/agent-update.sh >/dev/null 2>&1 &
+            exit 0
+        else
+            warn "auto-update download failed"
+        fi
+    fi
+
     new="$(jsonfilter -i "$RESP" -e '@.rev' 2>/dev/null)"; new="${new:-0}"
     cur="$(applied_rev)"
     if [ "$new" != "$cur" ]; then
@@ -68,6 +101,7 @@ sync_once() {
 }
 
 log "m9-rtr-agent up: $SYNC_URL every ${INTERVAL}s (pubkey ${ROUTER_PUBKEY:-?})"
+boot_select
 while :; do
     sync_once || true
     sleep "$INTERVAL"

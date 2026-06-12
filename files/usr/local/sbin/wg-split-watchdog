@@ -95,6 +95,16 @@ if vpn_healthy; then
     set_vpn
     [ "$_old" = "vpn:$VPN_IFACE" ] || log "VPN healthy via $VPN_IFACE — split active (mode ${MODE:-blocklist})"
 else
+    # AUTO endpoint: the tunnel is down — re-probe candidates and switch to the
+    # best working one (relay last). Only if that fails do we fall back to WAN.
+    if [ "${AUTO_ENDPOINT:-0}" = "1" ] && [ -x /usr/local/sbin/wg-split-endpoint ]; then
+        log "VPN $VPN_IFACE down — re-selecting endpoint (auto)"
+        /usr/local/sbin/wg-split-endpoint --auto >/dev/null 2>&1 || true
+        if vpn_healthy; then
+            set_vpn; log "VPN recovered via re-selected endpoint — split active"
+            return 0 2>/dev/null || exit 0
+        fi
+    fi
     _n=$(fail_inc); set_down
     if [ "${KILLSWITCH:-0}" = "1" ]; then
         [ "$_old" = "killswitch" ] || log "VPN $VPN_IFACE down (fail #$_n) — KILLSWITCH: policy traffic dropped"
