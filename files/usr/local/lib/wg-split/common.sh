@@ -29,10 +29,11 @@ warn() { log "WARN: $*"; }
 
 # Count IPv4 elements in an nft set without tripping `set -e` on empty.
 set_count() {
-    nft list set "$1" "$2" 2>/dev/null \
+    _cnt="$(nft list set "$1" "$2" 2>/dev/null \
         | tr ',' '\n' \
         | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
-        || echo 0
+        || true)"
+    echo "${_cnt:-0}"
 }
 
 has_rule() { ip -4 rule show | grep -q "$1"; }

@@ -13,18 +13,19 @@
 #   -l  LAN subnet behind this router (the dashboard advertises it on the mesh)
 #   -i  LAN interface (default: br-lan)
 #   -u  dashboard base URL (reachable over the mesh, e.g. https://10.8.0.1:8443)
+#   -p  split.local portal host/IP (dashboard mesh IP; default: host from -u)
 #   -t  router token (dashboard: client → "Enable router management")
 #   -k  router pubkey (the peer's PublicKey; ties the agent to the dashboard record)
 #   -w  VPN interface name to create (default: wg0)
 set -eu
 
-CONF="" LAN="" LANIF="br-lan" DURL="" TOKEN="" PUBKEY="" VPNIF="wg0"
-while getopts "c:l:i:u:t:k:w:" o; do case $o in
+CONF="" LAN="" LANIF="br-lan" DURL="" PORTAL_HOST="" TOKEN="" PUBKEY="" VPNIF="wg0"
+while getopts "c:l:i:u:p:t:k:w:" o; do case $o in
   c) CONF="$OPTARG";; l) LAN="$OPTARG";; i) LANIF="$OPTARG";; u) DURL="$OPTARG";;
-  t) TOKEN="$OPTARG";; k) PUBKEY="$OPTARG";; w) VPNIF="$OPTARG";; esac; done
+  p) PORTAL_HOST="$OPTARG";; t) TOKEN="$OPTARG";; k) PUBKEY="$OPTARG";; w) VPNIF="$OPTARG";; esac; done
 
 [ -f "$CONF" ] && [ -n "$LAN" ] && [ -n "$DURL" ] && [ -n "$TOKEN" ] || {
-  echo "usage: $0 -c router-<entry>.conf -l LAN/CIDR -i LANIF -u DASHBOARD_URL -t TOKEN -k PUBKEY [-w wg0]" >&2
+  echo "usage: $0 -c router-<entry>.conf -l LAN/CIDR -i LANIF -u DASHBOARD_URL [-p PORTAL_HOST] -t TOKEN -k PUBKEY [-w wg0]" >&2
   exit 1; }
 
 # Validate format to prevent shell injection via malicious args
@@ -33,6 +34,13 @@ echo "$LANIF" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "LANIF must be alphanumeri
 echo "$VPNIF" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "VPNIF must be alphanumeric" >&2; exit 1; }
 echo "$PUBKEY" | grep -qE '^[a-zA-Z0-9+/=]+$' || { echo "PUBKEY must be base64" >&2; exit 1; }
 echo "$TOKEN" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "TOKEN must be alphanumeric" >&2; exit 1; }
+if [ -z "$PORTAL_HOST" ]; then
+    PORTAL_HOST="$(echo "$DURL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+fi
+case "$PORTAL_HOST" in
+    http://*|https://*) PORTAL_HOST="$(echo "$PORTAL_HOST" | sed -n 's#https\?://\([^:/]*\).*#\1#p')" ;;
+esac
+echo "$PORTAL_HOST" | grep -qE '^[a-zA-Z0-9.-]+$' || { echo "PORTAL_HOST must be a hostname or IP" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -137,6 +145,7 @@ cp "$SRC/VERSION" /etc/wg-split/VERSION 2>/dev/null || date +%Y%m%d > /etc/wg-sp
 sed -e "s#@@VPN_IFACE@@#$VPNIF#g" -e "s#@@WG_SRC_IP@@#$WG_SRC_IP#g" \
     -e "s#@@LAN_IFACE@@#$LANIF#g" -e "s#@@LAN_CIDR@@#$LAN#g" \
     -e "s#@@WG_ENDPOINTS@@#$EPHOST#g" -e "s#@@DASHBOARD_URL@@#$DURL#g" \
+    -e "s#@@PORTAL_HOST@@#$PORTAL_HOST#g" \
     -e "s#@@ROUTER_TOKEN@@#$TOKEN#g" -e "s#@@ROUTER_PUBKEY@@#$PUBKEY#g" \
     "$SRC/files/etc/wg-split/wg-split.conf.tmpl" > /etc/wg-split/wg-split.conf
 [ "$ZAPRET_OK" = 1 ] || sed -i 's/^ZAPRET_ENABLED=.*/ZAPRET_ENABLED="0"/' /etc/wg-split/wg-split.conf
@@ -144,7 +153,7 @@ sed -e "s#@@VPN_IFACE@@#$VPNIF#g" -e "s#@@WG_SRC_IP@@#$WG_SRC_IP#g" \
 # seed a default policy so the box works before the first dashboard sync
 ZJSON=$([ "$ZAPRET_OK" = 1 ] && echo true || echo false)
 cat > /etc/wg-split/policy.json <<JSON
-{"ok":true,"rev":0,"policy":{"rev":0,"mode":"blocklist","entry":"","ipsum":true,"ru_direct":true,"zapret":$ZJSON,"killswitch":false,"dns_via_vpn":false,"vpn_cidrs":[],"vpn_domains":[],"direct_cidrs":[],"direct_domains":[],"devices":[]},"endpoints":{}}
+{"ok":true,"rev":0,"policy":{"rev":0,"mode":"blocklist","entry":"","ipsum":true,"ru_direct":true,"zapret":$ZJSON,"killswitch":false,"dns_via_vpn":false,"vpn_cidrs":[],"vpn_domains":[],"direct_cidrs":[],"direct_domains":[],"devices":[]},"endpoints":{},"portal_host":"$PORTAL_HOST"}
 JSON
 
 # ---- 5. bring up + populate lists -----------------------------------------

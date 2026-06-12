@@ -38,6 +38,11 @@ P_IPSUM_URL="$(jf '@.policy.ipsum_url')"
 P_RU_URL="$(jf '@.policy.ru_url')"
 P_PROBE_URL="$(jf '@.policy.probe_url')"
 P_RELAY_FB="$(jf '@.policy.relay_fallback')"; [ "$P_RELAY_FB" = "false" ] && P_RELAY_FB=0 || P_RELAY_FB=1
+P_PORTAL_HOST="$(jf '@.portal_host')"
+[ -n "$P_PORTAL_HOST" ] || P_PORTAL_HOST="${PORTAL_HOST:-}"
+case "$P_PORTAL_HOST" in
+    http://*|https://*) P_PORTAL_HOST="$(echo "$P_PORTAL_HOST" | sed -n 's#https\?://\([^:/]*\).*#\1#p')" ;;
+esac
 # entry "" or "auto" => probe & autoselect (boot/failover); else a pinned candidate
 P_AUTO=0; { [ -z "$P_ENTRY" ] || [ "$P_ENTRY" = "auto" ]; } && P_AUTO=1
 
@@ -184,13 +189,17 @@ mkdir -p "$DNSMASQ_DIR"
     for d in $DIRECT_DOMAINS; do echo "nftset=/$d/4#inet#fw4#$DIRECT_SET"; done
 } > "$DNSMASQ_DIR/$(basename "$DNSMASQ_NFTSET_FILE")"
 
-# split.local -> dashboard portal. dnsmasq address=/name/VALUE needs an IP;
-# writing a hostname here would make dnsmasq refuse its whole config (DNS down),
-# so only map when the dashboard URL host is a literal IPv4.
-DURL="$(grep -i 'DASHBOARD_URL=' /etc/wg-split/wg-split.conf | cut -d'"' -f2 || true)"
-DHOST="$(echo "$DURL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
-if echo "$DHOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-    echo "address=/split.local/$DHOST" > "$DNSMASQ_DIR/wg-split-portal.conf"
+# split.local -> dashboard portal. The agent sync URL may point at an
+# intermediate entry point; the portal must resolve to the dashboard itself so
+# the portal sees the router's real tunnel source IP. dnsmasq address=/name/IP
+# needs a literal IP, so fall back to DASHBOARD_URL only when no portal host is
+# supplied.
+if [ -z "$P_PORTAL_HOST" ]; then
+    DURL="$(grep -i 'DASHBOARD_URL=' /etc/wg-split/wg-split.conf | cut -d'"' -f2 || true)"
+    P_PORTAL_HOST="$(echo "$DURL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+fi
+if echo "$P_PORTAL_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "address=/split.local/$P_PORTAL_HOST" > "$DNSMASQ_DIR/wg-split-portal.conf"
 else
     rm -f "$DNSMASQ_DIR/wg-split-portal.conf"
 fi

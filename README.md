@@ -64,9 +64,11 @@ rotatable from the dashboard.
    ```sh
    git clone https://github.com/xyzmean/m9-split-router && cd m9-split-router
    ./install.sh -c router-m9-14.conf -l 10.8.1.0/24 -i br-lan \
-                -u https://10.8.0.1:8443 -t <TOKEN> -k <PUBKEY>
+                -u https://10.8.0.1:8443 -p 10.8.2.1 -t <TOKEN> -k <PUBKEY>
    ```
    `-l` is the router's own LAN subnet (e.g. `10.8.1.0/24` behind peer `10.8.0.2`).
+   `-p` is the dashboard mesh IP used for `split.local`; omit it only when the
+   dashboard sync URL already points directly at the dashboard.
 3. From then on, change **everything** from the dashboard's router panel — mode,
    lists, per-device, entry point. The agent applies within ~30 s. Re-run the
    installer only if the router's WAN/LAN interfaces or its WG keypair change.

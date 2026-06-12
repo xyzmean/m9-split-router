@@ -42,7 +42,7 @@ ensure_zapret() {
     [ -x "$ZAPRET_INIT" ] || return 0
     "$ZAPRET_INIT" enabled >/dev/null 2>&1 || "$ZAPRET_INIT" enable >/dev/null 2>&1 || true
     _need_sync=0
-    if ! pgrep -f /opt/zapret/nfq/nfqws >/dev/null 2>&1; then
+    if ! (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[n]fqws'; then
         "$ZAPRET_INIT" start >/dev/null 2>&1 || true; _need_sync=1
     else
         _noz=$(set_count "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET")
