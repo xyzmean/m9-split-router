@@ -202,6 +202,8 @@ if [ "$P_AUTO" != "1" ] && [ -x /usr/local/sbin/wg-split-endpoint ] && [ -n "$P_
     if [ "$(cat "${CHOSEN_FILE:-/var/run/wg-split-endpoint}" 2>/dev/null)" != "$P_ENTRY" ]; then
         /usr/local/sbin/wg-split-endpoint --pin "$P_ENTRY" >/dev/null 2>&1 || true
     fi
+elif [ "$P_AUTO" = "1" ] && [ -x /usr/local/sbin/wg-split-endpoint ] && [ ! -s "${CHOSEN_FILE:-/var/run/wg-split-endpoint}" ]; then
+    /usr/local/sbin/wg-split-endpoint --auto >/dev/null 2>&1 || true
 fi
 
 # ---- 4b. mesh management access (zone-based installs only) ------------------
