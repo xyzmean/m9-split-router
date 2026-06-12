@@ -90,8 +90,9 @@ sync_once() {
 
     new="$(jsonfilter -i "$RESP" -e '@.rev' 2>/dev/null)"; new="${new:-0}"
     cur="$(applied_rev)"
-    if [ "$new" != "$cur" ]; then
-        log "policy rev $cur -> $new; applying"
+    has_endpoints="$(jsonfilter -i "$POLICY_JSON" -e '@.endpoints[0].name' 2>/dev/null)"
+    if [ "$new" != "$cur" ] || [ -z "$has_endpoints" ]; then
+        log "policy rev $cur -> $new (or endpoints missing); applying"
         cp "$RESP" "$POLICY_JSON"
         /usr/local/sbin/wg-split-apply >/dev/null 2>&1 \
             && log "policy rev $new applied" \

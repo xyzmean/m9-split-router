@@ -144,7 +144,7 @@ sed -e "s#@@VPN_IFACE@@#$VPNIF#g" -e "s#@@WG_SRC_IP@@#$WG_SRC_IP#g" \
 # seed a default policy so the box works before the first dashboard sync
 ZJSON=$([ "$ZAPRET_OK" = 1 ] && echo true || echo false)
 cat > /etc/wg-split/policy.json <<JSON
-{"ok":true,"rev":1,"policy":{"rev":1,"mode":"blocklist","entry":"","ipsum":true,"ru_direct":true,"zapret":$ZJSON,"killswitch":false,"dns_via_vpn":false,"vpn_cidrs":[],"vpn_domains":[],"direct_cidrs":[],"direct_domains":[],"devices":[]},"endpoints":{}}
+{"ok":true,"rev":0,"policy":{"rev":0,"mode":"blocklist","entry":"","ipsum":true,"ru_direct":true,"zapret":$ZJSON,"killswitch":false,"dns_via_vpn":false,"vpn_cidrs":[],"vpn_domains":[],"direct_cidrs":[],"direct_domains":[],"devices":[]},"endpoints":{}}
 JSON
 
 # ---- 5. bring up + populate lists -----------------------------------------
