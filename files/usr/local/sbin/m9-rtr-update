@@ -1,0 +1,35 @@
+#!/bin/sh
+# Auto-updater for m9-split-router
+# Fetches the latest m9-split-router from the Dashboard and replaces the scripts.
+
+set -eu
+
+DURL="$(grep -i 'DASHBOARD_URL=' /etc/wg-split/wg-split.conf | cut -d'"' -f2)"
+INSECURE=""; [ "$(grep -i 'AGENT_TLS_INSECURE=' /etc/wg-split/wg-split.conf | cut -d'"' -f2)" = "1" ] && INSECURE="-k"
+
+echo "Downloading agent update from dashboard..."
+curl $INSECURE -fsSL --max-time 30 -o /tmp/m9-split-router-update.tar.gz "${DURL%/}/api/routers/agent_tarball"
+
+mkdir -p /tmp/m9-update
+tar xzf /tmp/m9-split-router-update.tar.gz -C /tmp/m9-update --strip-components=1
+
+echo "Applying updates..."
+cp /tmp/m9-update/files/usr/local/lib/wg-split/common.sh /usr/local/lib/wg-split/
+cp /tmp/m9-update/files/usr/local/sbin/* /usr/local/sbin/
+chmod +x /usr/local/sbin/wg-split-* /usr/local/sbin/m9-rtr-agent
+
+cp /tmp/m9-update/files/etc/nftables.d/30-wg-split.nft /etc/nftables.d/
+cp /tmp/m9-update/files/etc/init.d/m9-rtr-agent /etc/init.d/m9-rtr-agent
+chmod +x /etc/init.d/m9-rtr-agent
+
+# Update VERSION file
+if [ -f /tmp/m9-update/VERSION ]; then
+    cp /tmp/m9-update/VERSION /etc/wg-split/VERSION
+else
+    echo "$(date +%Y%m%d)" > /etc/wg-split/VERSION
+fi
+
+rm -rf /tmp/m9-update /tmp/m9-split-router-update.tar.gz
+
+echo "Update complete. Restarting agent..."
+/etc/init.d/m9-rtr-agent restart

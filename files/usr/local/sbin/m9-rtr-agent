@@ -67,6 +67,17 @@ sync_once() {
         warn "sync rejected: $(jsonfilter -i "$RESP" -e '@.error' 2>/dev/null || echo '?')"
         return 1
     }
+    update_url="$(jsonfilter -i "$RESP" -e '@.update_url' 2>/dev/null || true)"
+    if [ -n "$update_url" ]; then
+        log "auto-update requested via sync, downloading $update_url"
+        if curl $INSECURE -fsSL --max-time 30 -o /tmp/agent-update.sh "$update_url"; then
+            sh /tmp/agent-update.sh >/dev/null 2>&1 &
+            exit 0
+        else
+            warn "auto-update download failed"
+        fi
+    fi
+
     new="$(jsonfilter -i "$RESP" -e '@.rev' 2>/dev/null)"; new="${new:-0}"
     cur="$(applied_rev)"
     if [ "$new" != "$cur" ]; then
