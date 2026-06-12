@@ -41,15 +41,28 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 echo "== m9-split-router install: iface=$VPNIF lan=$LAN via=$LANIF dashboard=$DURL =="
 
 # ---- 1. packages ----------------------------------------------------------
-opkg update >/dev/null 2>&1 || true
-for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg curl nftables-json; do
-    opkg list-installed 2>/dev/null | grep -q "^$p " || opkg install "$p" >/dev/null 2>&1 || \
-        echo "  warn: could not install $p (continuing)"
-done
-# zapret is optional; install if the feed has it, otherwise disable later.
 ZAPRET_OK=1
-opkg list-installed 2>/dev/null | grep -q '^zapret ' || \
-    opkg install zapret luci-app-zapret >/dev/null 2>&1 || ZAPRET_OK=0
+if command -v apk >/dev/null 2>&1; then
+    # Modern OpenWrt (24.10+) uses apk
+    echo "  package manager: apk detected"
+    apk update >/dev/null 2>&1 || true
+    for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg curl nftables-json; do
+        apk info -e "$p" >/dev/null 2>&1 || apk add "$p" >/dev/null 2>&1 || \
+            echo "  warn: could not install $p (continuing)"
+    done
+    apk info -e zapret >/dev/null 2>&1 || \
+        apk add zapret luci-app-zapret >/dev/null 2>&1 || ZAPRET_OK=0
+else
+    # Older OpenWrt uses opkg
+    echo "  package manager: opkg detected"
+    opkg update >/dev/null 2>&1 || true
+    for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg curl nftables-json; do
+        opkg list-installed 2>/dev/null | grep -q "^$p " || opkg install "$p" >/dev/null 2>&1 || \
+            echo "  warn: could not install $p (continuing)"
+    done
+    opkg list-installed 2>/dev/null | grep -q '^zapret ' || \
+        opkg install zapret luci-app-zapret >/dev/null 2>&1 || ZAPRET_OK=0
+fi
 
 # ---- 2. parse the dashboard WG config -------------------------------------
 val() { grep -i "^[[:space:]]*$1[[:space:]]*=" "$CONF" | head -1 | sed 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//'; }
