@@ -105,6 +105,19 @@ uci set firewall.m9zone.forward='REJECT'; uci set firewall.m9zone.masq='0'
 uci add_list firewall.m9zone.network="$VPNIF"
 uci set firewall.m9fwd=forwarding
 uci set firewall.m9fwd.src='lan'; uci set firewall.m9fwd.dest='m9vpn'
+# mesh management: input=REJECT must NOT cut ssh/icmp from the control plane,
+# and the mesh must reach the LAN we advertise (wg-split-apply re-ensures these)
+uci -q delete firewall.m9ssh || true; uci -q delete firewall.m9icmp || true
+uci -q delete firewall.m9fwd_in || true
+uci set firewall.m9ssh=rule
+uci set firewall.m9ssh.name='m9vpn-mgmt-ssh'; uci set firewall.m9ssh.src='m9vpn'
+uci set firewall.m9ssh.proto='tcp'; uci set firewall.m9ssh.dest_port='22'
+uci set firewall.m9ssh.target='ACCEPT'
+uci set firewall.m9icmp=rule
+uci set firewall.m9icmp.name='m9vpn-mgmt-icmp'; uci set firewall.m9icmp.src='m9vpn'
+uci set firewall.m9icmp.proto='icmp'; uci set firewall.m9icmp.target='ACCEPT'
+uci set firewall.m9fwd_in=forwarding
+uci set firewall.m9fwd_in.src='m9vpn'; uci set firewall.m9fwd_in.dest='lan'
 uci commit network; uci commit firewall
 
 # ---- 4. lay down the wg-split stack ---------------------------------------

@@ -18,6 +18,10 @@ IPSUM_ENABLED="${IPSUM_ENABLED:-1}"
 KILLSWITCH="${KILLSWITCH:-0}"
 VPN_SET="${VPN_SET:-wg_split_vpn_v4}"
 DIRECT_SET="${DIRECT_SET:-wg_split_direct_v4}"
+# The WG mesh range. Dashboard configs assign the tunnel IP as /32, so without
+# an explicit route the router has NO return path to the mesh (only the
+# dashboard host-route the watchdog pins) — mesh ssh/ping would time out.
+MESH_CIDR="${MESH_CIDR:-10.8.0.0/16}"
 
 log()  { logger -t "${LOG_TAG:-wg-split}" "$*"; }
 die()  { log "ERROR: $*"; echo "ERROR: $*" >&2; exit 1; }

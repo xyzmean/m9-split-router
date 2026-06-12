@@ -62,6 +62,10 @@ common_rules() {   # the two ip rules are mode-independent; routes differ below
 set_vpn() {
     common_rules
     ip -4 route replace default dev "$VPN_IFACE" table "$WG_TABLE"
+    # mesh return path: the tunnel address is a /32 (dashboard configs), so the
+    # kernel creates no on-link route — without this, traffic FROM the mesh
+    # (dashboard ssh/ping, other nodes) gets answered out the WAN and dies.
+    ip -4 route replace "$MESH_CIDR" dev "$VPN_IFACE" ${WG_SRC_IP:+src "$WG_SRC_IP"} 2>/dev/null || true
     for _ip in $DOH_IPS; do pin_route "$_ip" "$VPN_IFACE" "$WG_SRC_IP"; done
     if ensure_ipsum; then :
     elif [ "$IPSUM_FALLBACK_SKIP" = "1" ]; then

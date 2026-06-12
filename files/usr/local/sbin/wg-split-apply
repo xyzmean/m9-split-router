@@ -204,6 +204,39 @@ if [ "$P_AUTO" != "1" ] && [ -x /usr/local/sbin/wg-split-endpoint ] && [ -n "$P_
     fi
 fi
 
+# ---- 4b. mesh management access (zone-based installs only) ------------------
+# install.sh puts the tunnel in zone m9vpn with input=REJECT — correct for
+# client traffic, but it also rejects ssh/icmp FROM the mesh (dashboard side),
+# making the router look dead from the control plane. Allow exactly those, plus
+# mesh -> LAN forwarding (the dashboard advertises our LAN on the mesh).
+if uci -q get firewall.m9zone >/dev/null 2>&1; then
+    fw_changed=0
+    if ! uci -q get firewall.m9ssh >/dev/null 2>&1; then
+        uci set firewall.m9ssh=rule
+        uci set firewall.m9ssh.name='m9vpn-mgmt-ssh'
+        uci set firewall.m9ssh.src='m9vpn'
+        uci set firewall.m9ssh.proto='tcp'
+        uci set firewall.m9ssh.dest_port='22'
+        uci set firewall.m9ssh.target='ACCEPT'
+        fw_changed=1
+    fi
+    if ! uci -q get firewall.m9icmp >/dev/null 2>&1; then
+        uci set firewall.m9icmp=rule
+        uci set firewall.m9icmp.name='m9vpn-mgmt-icmp'
+        uci set firewall.m9icmp.src='m9vpn'
+        uci set firewall.m9icmp.proto='icmp'
+        uci set firewall.m9icmp.target='ACCEPT'
+        fw_changed=1
+    fi
+    if ! uci -q get firewall.m9fwd_in >/dev/null 2>&1; then
+        uci set firewall.m9fwd_in=forwarding
+        uci set firewall.m9fwd_in.src='m9vpn'
+        uci set firewall.m9fwd_in.dest='lan'
+        fw_changed=1
+    fi
+    [ "$fw_changed" = 1 ] && { uci commit firewall; log "mesh mgmt firewall rules installed"; }
+fi
+
 # ---- 5. reload + re-apply routing ------------------------------------------
 fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
 # restart, not reload: SIGHUP does not re-read conf-dir drop-ins
