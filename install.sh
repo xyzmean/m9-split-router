@@ -26,6 +26,14 @@ while getopts "c:l:i:u:t:k:w:" o; do case $o in
 [ -f "$CONF" ] && [ -n "$LAN" ] && [ -n "$DURL" ] && [ -n "$TOKEN" ] || {
   echo "usage: $0 -c router-<entry>.conf -l LAN/CIDR -i LANIF -u DASHBOARD_URL -t TOKEN -k PUBKEY [-w wg0]" >&2
   exit 1; }
+
+# Validate format to prevent shell injection via malicious args
+echo "$LAN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' || { echo "LAN must be CIDR" >&2; exit 1; }
+echo "$LANIF" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "LANIF must be alphanumeric" >&2; exit 1; }
+echo "$VPNIF" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "VPNIF must be alphanumeric" >&2; exit 1; }
+echo "$PUBKEY" | grep -qE '^[a-zA-Z0-9+/=]+$' || { echo "PUBKEY must be base64" >&2; exit 1; }
+echo "$TOKEN" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "TOKEN must be alphanumeric" >&2; exit 1; }
+
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 SRC="$(cd "$(dirname "$0")" && pwd)"
 [ -d "$SRC/files" ] || { echo "run from the repo checkout (files/ missing)" >&2; exit 1; }
@@ -91,6 +99,7 @@ mkdir -p /etc/wg-split /usr/local/lib/wg-split /usr/local/sbin /etc/nftables.d
 cp "$SRC/files/usr/local/lib/wg-split/common.sh" /usr/local/lib/wg-split/
 cp "$SRC"/files/usr/local/sbin/* /usr/local/sbin/
 chmod +x /usr/local/sbin/wg-split-* /usr/local/sbin/m9-rtr-agent
+rm -f /etc/nftables.d/31-wg-split-policy.nft
 cp "$SRC/files/etc/nftables.d/30-wg-split.nft" /etc/nftables.d/
 cp "$SRC/files/etc/init.d/m9-rtr-agent" /etc/init.d/m9-rtr-agent
 chmod +x /etc/init.d/m9-rtr-agent
