@@ -48,7 +48,7 @@ rm -f /etc/nftables.d/30-wg-split.nft \
       /etc/nftables.d/31-wg-split-policy.nft \
       /etc/nftables.d/30-ru-wg-split.nft \
       /etc/nftables.d/31-ipsum-wg-split.nft
-rm -f /tmp/dnsmasq.d/wg-split-domains.conf
+rm -f /tmp/dnsmasq.d/wg-split-*.conf
 /etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
 rm -f /etc/hotplug.d/iface/93-wg-split-rules \
       /etc/hotplug.d/iface/94-wg-split-doh-routes

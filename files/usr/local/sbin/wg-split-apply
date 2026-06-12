@@ -179,6 +179,15 @@ mkdir -p "$(dirname "$DNSMASQ_NFTSET_FILE")"
     for d in $DIRECT_DOMAINS; do echo "nftset=/$d/4#inet#fw4#$DIRECT_SET"; done
 } > "$DNSMASQ_NFTSET_FILE"
 
+# Setup local split.local redirect mapping to the dashboard
+DURL="$(grep -i 'DASHBOARD_URL=' /etc/wg-split/wg-split.conf | cut -d'"' -f2 || true)"
+if [ -n "$DURL" ]; then
+    DHOST="$(echo "$DURL" | sed -E 's#https?://([^:/]+).*#\1#')"
+    if [ -n "$DHOST" ]; then
+        echo "address=/split.local/$DHOST" > "$(dirname "$DNSMASQ_NFTSET_FILE")/wg-split-portal.conf"
+    fi
+fi
+
 # ---- 4. entry point: pin a specific candidate; leave auto to boot/failover --
 # (auto-probing bounces the tunnel per candidate, so we DON'T do it on every
 # policy save — the agent does it at boot and the watchdog on failure.)
