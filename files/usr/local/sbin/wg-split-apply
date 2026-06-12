@@ -195,6 +195,10 @@ else
     rm -f "$DNSMASQ_DIR/wg-split-portal.conf"
 fi
 
+# reload dnsmasq now so that any domain-based DASHBOARD_URL (like split.local)
+# resolves correctly when wg-split-endpoint probes the entry points.
+/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+
 # ---- 4. entry point: pin a specific candidate; leave auto to boot/failover --
 # (auto-probing bounces the tunnel per candidate, so we DON'T do it on every
 # policy save — the agent does it at boot and the watchdog on failure.)
@@ -241,8 +245,6 @@ fi
 
 # ---- 5. reload + re-apply routing ------------------------------------------
 fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
-# restart, not reload: SIGHUP does not re-read conf-dir drop-ins
-/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 [ -x /usr/local/sbin/wg-split-watchdog ] && /usr/local/sbin/wg-split-watchdog >/dev/null 2>&1 || true
 
 # ---- 6. list-source change -> pull the new list NOW (background; daily cron
