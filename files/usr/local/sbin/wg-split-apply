@@ -175,11 +175,16 @@ HAS_DEV=0;    [ -n "$(jsonfilter -i "$POLICY_JSON" -e '@.policy.devices[0].ip' 2
     echo "}"
 } > "${POLICY_NFT_FILE}.tmp"
 mv "${POLICY_NFT_FILE}.tmp" "$POLICY_NFT_FILE"
-# Drop the pre-rename policy file left by older installs. fw4 inline-includes
-# every /etc/nftables.d/*.nft, so a stale 31-wg-split-policy.nft would load its
-# obsolete chains/sets ALONGSIDE the canonical 30-wg-split.nft — at best keeping
-# an old policy live, at worst failing the fw4 reload on duplicate set names.
-rm -f /etc/nftables.d/31-wg-split-policy.nft
+# Drop the pre-rename policy file left by older installs — but ONLY when this
+# router is actually configured to write the new canonical 30-wg-split.nft. The
+# auto-updater copies scripts + the 30 seed yet does NOT rewrite the operator's
+# wg-split.conf, so a not-yet-migrated router can still have POLICY_NFT_FILE
+# pointing at the 31 path — in which case `mv` above just wrote the live policy
+# THERE, and deleting it would leave fw4 with only the markless 30 seed (all
+# traffic WAN). Guard on the path: remove 31 only once it's no longer our output.
+if [ "$POLICY_NFT_FILE" != "/etc/nftables.d/31-wg-split-policy.nft" ]; then
+    rm -f /etc/nftables.d/31-wg-split-policy.nft
+fi
 
 # ---- 3. dnsmasq domain -> nftset (resolve-time tagging) --------------------
 # The live dnsmasq's conf-dir wins over the configured path: on instanced

@@ -165,19 +165,26 @@ sync_once() {
     fi
     if [ -n "$update_url" ]; then
         log "auto-update requested via sync, downloading $update_url"
-        # NO -L: curl must not follow redirects here. With -L it forwards the
-        # X-Router-Token header to the redirect target, leaking the router's bearer
-        # token to any host the (origin-pinned) URL redirects to. The dashboard
-        # serves the script directly, so a redirect is never expected — and only a
-        # non-empty download is executed.
-        if curl $INSECURE -fsS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
-                -o /tmp/agent-update.sh "$update_url" && [ -s /tmp/agent-update.sh ]; then
-            # procd respawns us after exit; the update script also restarts the service
-            sh /tmp/agent-update.sh >/dev/null 2>&1 &
-            exit 0
-        else
-            warn "auto-update download failed"
-        fi
+        # NO -L: curl must not follow redirects, or it would forward X-Router-Token
+        # to the redirect target (cross-origin token leak). But WITHOUT -L a 3xx
+        # still exits 0 and writes the redirect BODY to the file (-f/--fail only
+        # trips on >=400), so we additionally gate on the HTTP status: capture it
+        # with -w and execute ONLY a non-empty 2xx payload. A redirect/login/error
+        # page is refused and discarded, never run as a root shell script.
+        _code="$(curl $INSECURE -sS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
+                 -o /tmp/agent-update.sh -w '%{http_code}' "$update_url" 2>/dev/null)"
+        case "${_code:-000}" in
+            2[0-9][0-9])
+                if [ -s /tmp/agent-update.sh ]; then
+                    # procd respawns us after exit; the update script also restarts the service
+                    sh /tmp/agent-update.sh >/dev/null 2>&1 &
+                    exit 0
+                fi
+                warn "auto-update: empty 2xx payload, skipping" ;;
+            *)
+                rm -f /tmp/agent-update.sh
+                warn "auto-update refused: HTTP ${_code:-?} (redirect/error body not executed)" ;;
+        esac
     fi
 
     new="$(jsonfilter -i "$RESP" -e '@.rev' 2>/dev/null)"; new="${new:-0}"
