@@ -144,9 +144,16 @@ sync_once() {
         return 1
     }
     [ -n "$DEV_FIELD" ] && DEV_SENT_HASH="$_devhash"
-    # the dashboard can retune our poll interval centrally (rtr_sync_interval)
+    # the dashboard can retune our poll interval centrally (rtr_sync_interval).
+    # Strip leading zeros first: a value like "099" passes the digit/range checks
+    # but later trips $((INTERVAL * 6)) in the backoff path, where the shell parses
+    # a leading-zero literal as octal ("9"/"8" invalid) and aborts the agent.
     _iv="$(jsonfilter -i "$RESP" -e '@.interval' 2>/dev/null)"
-    case "$_iv" in (*[!0-9]*|"") ;; (*) [ "$_iv" -ge 10 ] && [ "$_iv" -le 3600 ] && INTERVAL="$_iv" ;; esac
+    case "$_iv" in
+        (*[!0-9]*|"") ;;
+        (*) _iv="$(echo "$_iv" | sed 's/^0*//')"; [ -n "$_iv" ] || _iv=0
+            [ "$_iv" -ge 10 ] && [ "$_iv" -le 3600 ] && INTERVAL="$_iv" ;;
+    esac
     update_url="$(jsonfilter -i "$RESP" -e '@.update_url' 2>/dev/null || true)"
     if [ -n "$update_url" ]; then
         # only ever execute update scripts served by OUR dashboard; the token
@@ -158,13 +165,30 @@ sync_once() {
     fi
     if [ -n "$update_url" ]; then
         log "auto-update requested via sync, downloading $update_url"
-        if curl $INSECURE -fsSL --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
-                -o /tmp/agent-update.sh "$update_url"; then
-            # procd respawns us after exit; the update script also restarts the service
-            sh /tmp/agent-update.sh >/dev/null 2>&1 &
-            exit 0
+        # Three guards before we ever run the payload as root:
+        #  1. NO -L — curl must not follow redirects, or it forwards X-Router-Token
+        #     to the redirect target (cross-origin token leak).
+        #  2. curl itself must SUCCEED — without -L a 3xx exits 0 and writes the
+        #     redirect body, and a 2xx that drops mid-transfer leaves http_code=200
+        #     with a TRUNCATED file (curl exit 18). The `if VAR=$(...)` exit status
+        #     IS curl's, so requiring it (plus a non-empty file) rejects both the
+        #     partial-transfer and the redirect/error-body cases.
+        #  3. the HTTP status must be 2xx (a clean 3xx/4xx/5xx response is refused).
+        if _code="$(curl $INSECURE -sS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
+                    -o /tmp/agent-update.sh -w '%{http_code}' "$update_url" 2>/dev/null)" \
+           && [ -s /tmp/agent-update.sh ]; then
+            case "${_code:-000}" in
+                2[0-9][0-9])
+                    # procd respawns us after exit; the update script also restarts the service
+                    sh /tmp/agent-update.sh >/dev/null 2>&1 &
+                    exit 0 ;;
+                *)
+                    rm -f /tmp/agent-update.sh
+                    warn "auto-update refused: HTTP ${_code:-?} (redirect/error body not executed)" ;;
+            esac
         else
-            warn "auto-update download failed"
+            rm -f /tmp/agent-update.sh
+            warn "auto-update download failed (curl error or empty body)"
         fi
     fi
 
