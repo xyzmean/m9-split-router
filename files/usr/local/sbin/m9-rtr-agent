@@ -165,26 +165,31 @@ sync_once() {
     fi
     if [ -n "$update_url" ]; then
         log "auto-update requested via sync, downloading $update_url"
-        # NO -L: curl must not follow redirects, or it would forward X-Router-Token
-        # to the redirect target (cross-origin token leak). But WITHOUT -L a 3xx
-        # still exits 0 and writes the redirect BODY to the file (-f/--fail only
-        # trips on >=400), so we additionally gate on the HTTP status: capture it
-        # with -w and execute ONLY a non-empty 2xx payload. A redirect/login/error
-        # page is refused and discarded, never run as a root shell script.
-        _code="$(curl $INSECURE -sS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
-                 -o /tmp/agent-update.sh -w '%{http_code}' "$update_url" 2>/dev/null)"
-        case "${_code:-000}" in
-            2[0-9][0-9])
-                if [ -s /tmp/agent-update.sh ]; then
+        # Three guards before we ever run the payload as root:
+        #  1. NO -L — curl must not follow redirects, or it forwards X-Router-Token
+        #     to the redirect target (cross-origin token leak).
+        #  2. curl itself must SUCCEED — without -L a 3xx exits 0 and writes the
+        #     redirect body, and a 2xx that drops mid-transfer leaves http_code=200
+        #     with a TRUNCATED file (curl exit 18). The `if VAR=$(...)` exit status
+        #     IS curl's, so requiring it (plus a non-empty file) rejects both the
+        #     partial-transfer and the redirect/error-body cases.
+        #  3. the HTTP status must be 2xx (a clean 3xx/4xx/5xx response is refused).
+        if _code="$(curl $INSECURE -sS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
+                    -o /tmp/agent-update.sh -w '%{http_code}' "$update_url" 2>/dev/null)" \
+           && [ -s /tmp/agent-update.sh ]; then
+            case "${_code:-000}" in
+                2[0-9][0-9])
                     # procd respawns us after exit; the update script also restarts the service
                     sh /tmp/agent-update.sh >/dev/null 2>&1 &
-                    exit 0
-                fi
-                warn "auto-update: empty 2xx payload, skipping" ;;
-            *)
-                rm -f /tmp/agent-update.sh
-                warn "auto-update refused: HTTP ${_code:-?} (redirect/error body not executed)" ;;
-        esac
+                    exit 0 ;;
+                *)
+                    rm -f /tmp/agent-update.sh
+                    warn "auto-update refused: HTTP ${_code:-?} (redirect/error body not executed)" ;;
+            esac
+        else
+            rm -f /tmp/agent-update.sh
+            warn "auto-update download failed (curl error or empty body)"
+        fi
     fi
 
     new="$(jsonfilter -i "$RESP" -e '@.rev' 2>/dev/null)"; new="${new:-0}"
