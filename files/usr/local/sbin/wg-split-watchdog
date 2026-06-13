@@ -99,6 +99,15 @@ if vpn_healthy; then
     set_vpn
     [ "$_old" = "vpn:$VPN_IFACE" ] || log "VPN healthy via $VPN_IFACE — split active (mode ${MODE:-blocklist})"
 else
+    # Fail CLOSED first when the killswitch is on. The AUTO re-probe below bounces
+    # the tunnel per candidate and can take many seconds; during that window table
+    # 200 has no usable route, so marked policy-VPN traffic would fall through to
+    # the main table and leak out the WAN. Install the blackhole NOW (set_down)
+    # before any probing, so there is no fail-open window — set_vpn() lifts it on
+    # recovery. Non-killswitch keeps WAN-fallback semantics, so nothing to do early.
+    if [ "${KILLSWITCH:-0}" = "1" ]; then
+        set_down
+    fi
     # AUTO endpoint: the tunnel is down — re-probe candidates and switch to the
     # best working one (relay last). Only if that fails do we fall back to WAN.
     if [ "${AUTO_ENDPOINT:-0}" = "1" ] && [ -x /usr/local/sbin/wg-split-endpoint ]; then

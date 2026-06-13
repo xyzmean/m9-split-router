@@ -174,12 +174,22 @@ auto() {
         echo "$_best_mtu" > "$MTU_FILE"
         log "endpoint autoselected -> $_best_name ($_best_ep, MTU $_best_mtu, ${_best_ms}ms)"
         if [ "$_best_name" = "$_relay_name" ] && [ -z "${NO_RECOVER:-}" ]; then
+            # Kill any previous recovery worker. Its PID is recorded by the PARENT
+            # via $! below — NOT `echo $$` from inside the subshell, because in ash
+            # $$ stays the PARENT's PID there, so the old code recorded the wrong
+            # PID, this kill hit the wrong/own process, and the real worker leaked.
             [ -f /var/run/wg-relay-recovery.pid ] && kill "$(cat /var/run/wg-relay-recovery.pid)" 2>/dev/null
             (
-                echo $$ > /var/run/wg-relay-recovery.pid
-                _attempts=0
-                while [ "$_attempts" -lt 2 ]; do
+                # Bounded BOTH ways: at most 2 actual re-probe attempts AND at most
+                # 60 polling loops (~1h) total. The old loop only advanced _attempts
+                # when a tier-1 answered ping — but after a relay fallback tier-1 is
+                # normally DOWN (that's why we fell back), so _attempts stayed 0 and
+                # the worker spun forever, stacking an unkillable root worker on each
+                # relay switch. The _loops cap guarantees it always terminates.
+                _attempts=0; _loops=0
+                while [ "$_attempts" -lt 2 ] && [ "$_loops" -lt 60 ]; do
                     sleep 60
+                    _loops=$((_loops + 1))
                     _any_t1_up=0
                     _i=0; _N="$(n_candidates)"
                     while [ "$_i" -lt "$_N" ]; do
@@ -201,8 +211,9 @@ auto() {
                         _attempts=$((_attempts + 1))
                     fi
                 done
-                log "relay recovery: gave up after 2 tests"
+                log "relay recovery: gave up after $_loops checks / $_attempts attempts"
             ) &
+            echo $! > /var/run/wg-relay-recovery.pid
         fi
         return 0
     fi
