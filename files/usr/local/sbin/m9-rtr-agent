@@ -17,6 +17,12 @@ INSECURE=""; [ "${AGENT_TLS_INSECURE:-0}" = "1" ] && INSECURE="-k"
 SYNC_URL="${DASHBOARD_URL%/}/api/rtr/sync"
 RESP="/tmp/m9-rtr-sync.json"
 
+# Capabilities this agent advertises in every status report so the dashboard
+# negotiates features by what we support instead of guessing from our version
+# (see m9-core/manifest.yaml). Comma-separated; additive — an older dashboard
+# simply ignores the field. Keep in sync with capabilities.router_sync there.
+CAPS="slim,telemetry,auto_update,backoff,caps"
+
 applied_rev() { [ -r "$POLICY_ENV" ] && . "$POLICY_ENV"; echo "${APPLIED_REV:-0}"; }
 
 # JSON array of current LAN devices from the DHCP lease file: ip/mac/host.
@@ -95,8 +101,8 @@ build_status() {
     _portal="$(jsonfilter -i "$POLICY_JSON" -e '@.portal_host' 2>/dev/null)"
     printf '"applied_rev":%s,"handshake_age":%s,"rx":%s,"tx":%s,"entry":"%s","mtu":%s,"error":"%s",' \
            "$(applied_rev)" "$_hsage" "$_rx" "$_tx" "${_entry:-}" "$_mtu" "$_err"
-    printf '"slim":1,"need_full":%s,"portal_host":"%s"%s%s}' \
-           "$_need_full" "$_portal" "$TELEMETRY_FIELD" "$DEV_FIELD"
+    printf '"slim":1,"need_full":%s,"portal_host":"%s","caps":"%s"%s%s}' \
+           "$_need_full" "$_portal" "$CAPS" "$TELEMETRY_FIELD" "$DEV_FIELD"
 }
 
 # Boot-time endpoint autoselect (once): probe candidates and switch to the best.
@@ -185,7 +191,19 @@ sync_once() {
 
 log "m9-rtr-agent up: $SYNC_URL every ${INTERVAL}s (pubkey ${ROUTER_PUBKEY:-?})"
 boot_select
+# Poll on $INTERVAL while healthy; when the dashboard is unreachable/rejecting,
+# ramp the wait exponentially (capped) so a control-plane outage doesn't keep a
+# router spinning curl + waking the CPU/radio every 30 s — it resets to the base
+# interval the instant a sync succeeds. Pure client-side timing; no protocol change.
+BACKOFF=0
 while :; do
-    sync_once || true
-    sleep "$INTERVAL"
+    if sync_once; then
+        BACKOFF=0
+        sleep "$INTERVAL"
+    else
+        if [ "$BACKOFF" -gt 0 ]; then BACKOFF=$((BACKOFF * 2)); else BACKOFF="$INTERVAL"; fi
+        _bmax=$((INTERVAL * 6)); [ "$_bmax" -gt 300 ] && _bmax=300
+        [ "$BACKOFF" -gt "$_bmax" ] && BACKOFF="$_bmax"
+        sleep "$BACKOFF"
+    fi
 done
