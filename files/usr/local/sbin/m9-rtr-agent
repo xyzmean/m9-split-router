@@ -13,7 +13,17 @@ set -u
 [ -n "${DASHBOARD_URL:-}" ] || die "DASHBOARD_URL not set in $CONF_FILE"
 [ -n "${ROUTER_TOKEN:-}" ]  || die "ROUTER_TOKEN not set in $CONF_FILE"
 INTERVAL="${AGENT_INTERVAL:-30}"
-INSECURE=""; [ "${AGENT_TLS_INSECURE:-0}" = "1" ] && INSECURE="-k"
+# Default AGENT_TLS_INSECURE to 0 (strict validation) for public domains,
+# but default to 1 (insecure) if connecting over the WireGuard mesh IP (10.8.0.0/16)
+# or the split.local alias, where the underlying tunnel already provides peer authentication.
+_host="$(echo "$DASHBOARD_URL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+_fallback=0
+if echo "$_host" | grep -qE '^10\.8\.[0-9]+\.[0-9]+$'; then
+    _fallback=1
+elif [ "$_host" = "split.local" ]; then
+    _fallback=1
+fi
+INSECURE=""; [ "${AGENT_TLS_INSECURE:-$_fallback}" = "1" ] && INSECURE="-k"
 SYNC_URL="${DASHBOARD_URL%/}/api/rtr/sync"
 RESP="/tmp/m9-rtr-sync.json"
 
