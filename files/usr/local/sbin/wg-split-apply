@@ -175,6 +175,11 @@ HAS_DEV=0;    [ -n "$(jsonfilter -i "$POLICY_JSON" -e '@.policy.devices[0].ip' 2
     echo "}"
 } > "${POLICY_NFT_FILE}.tmp"
 mv "${POLICY_NFT_FILE}.tmp" "$POLICY_NFT_FILE"
+# Drop the pre-rename policy file left by older installs. fw4 inline-includes
+# every /etc/nftables.d/*.nft, so a stale 31-wg-split-policy.nft would load its
+# obsolete chains/sets ALONGSIDE the canonical 30-wg-split.nft — at best keeping
+# an old policy live, at worst failing the fw4 reload on duplicate set names.
+rm -f /etc/nftables.d/31-wg-split-policy.nft
 
 # ---- 3. dnsmasq domain -> nftset (resolve-time tagging) --------------------
 # The live dnsmasq's conf-dir wins over the configured path: on instanced
@@ -198,6 +203,13 @@ if [ -z "$P_PORTAL_HOST" ]; then
     DURL="$(grep -i 'DASHBOARD_URL=' /etc/wg-split/wg-split.conf | cut -d'"' -f2 || true)"
     P_PORTAL_HOST="$(echo "$DURL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
 fi
+# portal_host is written verbatim into a dnsmasq `address=` directive, so it MUST
+# be a single bare IPv4 token. A dashboard/MITM-crafted value carrying a newline
+# (e.g. "10.8.2.1\nserver=/#/6.6.6.6") would otherwise inject a second dnsmasq
+# directive — `grep -qE '^..$'` is line-oriented and matches if ANY line is an IP.
+# Reject anything containing a char outside [0-9.] (newlines, spaces, directives)
+# BEFORE the shape check, so only a clean single-line IPv4 can reach the file.
+case "$P_PORTAL_HOST" in ""|*[!0-9.]*) P_PORTAL_HOST="" ;; esac
 if echo "$P_PORTAL_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
     echo "address=/split.local/$P_PORTAL_HOST" > "$DNSMASQ_DIR/wg-split-portal.conf"
 else
@@ -254,6 +266,12 @@ fi
 
 # ---- 5. reload + re-apply routing ------------------------------------------
 fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
+# fw4 reload REPLACES `table inet fw4`, wiping the resolve-time nft set elements
+# dnsmasq populated for vpn/direct domains. The earlier dnsmasq restart (step 3)
+# runs BEFORE this reload — its tagged elements would be cleared here and only
+# repopulate on cache expiry, so VPN-domain traffic can silently miss its mark.
+# Restart dnsmasq AGAIN, after fw4, so domain marks are re-established immediately.
+/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 [ -x /usr/local/sbin/wg-split-watchdog ] && /usr/local/sbin/wg-split-watchdog >/dev/null 2>&1 || true
 
 # ---- 6. list-source change -> pull the new list NOW (background; daily cron

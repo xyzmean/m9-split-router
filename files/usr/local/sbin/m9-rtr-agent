@@ -144,9 +144,16 @@ sync_once() {
         return 1
     }
     [ -n "$DEV_FIELD" ] && DEV_SENT_HASH="$_devhash"
-    # the dashboard can retune our poll interval centrally (rtr_sync_interval)
+    # the dashboard can retune our poll interval centrally (rtr_sync_interval).
+    # Strip leading zeros first: a value like "099" passes the digit/range checks
+    # but later trips $((INTERVAL * 6)) in the backoff path, where the shell parses
+    # a leading-zero literal as octal ("9"/"8" invalid) and aborts the agent.
     _iv="$(jsonfilter -i "$RESP" -e '@.interval' 2>/dev/null)"
-    case "$_iv" in (*[!0-9]*|"") ;; (*) [ "$_iv" -ge 10 ] && [ "$_iv" -le 3600 ] && INTERVAL="$_iv" ;; esac
+    case "$_iv" in
+        (*[!0-9]*|"") ;;
+        (*) _iv="$(echo "$_iv" | sed 's/^0*//')"; [ -n "$_iv" ] || _iv=0
+            [ "$_iv" -ge 10 ] && [ "$_iv" -le 3600 ] && INTERVAL="$_iv" ;;
+    esac
     update_url="$(jsonfilter -i "$RESP" -e '@.update_url' 2>/dev/null || true)"
     if [ -n "$update_url" ]; then
         # only ever execute update scripts served by OUR dashboard; the token
@@ -158,8 +165,13 @@ sync_once() {
     fi
     if [ -n "$update_url" ]; then
         log "auto-update requested via sync, downloading $update_url"
-        if curl $INSECURE -fsSL --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
-                -o /tmp/agent-update.sh "$update_url"; then
+        # NO -L: curl must not follow redirects here. With -L it forwards the
+        # X-Router-Token header to the redirect target, leaking the router's bearer
+        # token to any host the (origin-pinned) URL redirects to. The dashboard
+        # serves the script directly, so a redirect is never expected — and only a
+        # non-empty download is executed.
+        if curl $INSECURE -fsS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
+                -o /tmp/agent-update.sh "$update_url" && [ -s /tmp/agent-update.sh ]; then
             # procd respawns us after exit; the update script also restarts the service
             sh /tmp/agent-update.sh >/dev/null 2>&1 &
             exit 0
