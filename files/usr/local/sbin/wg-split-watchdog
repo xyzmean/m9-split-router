@@ -74,12 +74,12 @@ set_vpn() {
     # kernel creates no on-link route — without this, traffic FROM the mesh
     # (dashboard ssh/ping, other nodes) gets answered out the WAN and dies.
     ip -4 route replace "$MESH_CIDR" dev "$VPN_IFACE" ${WG_SRC_IP:+src "$WG_SRC_IP"} 2>/dev/null || true
-    # mesh node /32 route: if we know the dashboard's mesh address, add a
-    # specific /32 route so mesh health probes can reach it.
-    _mesh_dash="$(echo "$MESH_DASHBOARD_URL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
-    if [ -n "$_mesh_dash" ] && echo "$_mesh_dash" | grep -qE '^10\.90\.'; then
-        ip -4 route replace "$_mesh_dash/32" dev "$VPN_IFACE" ${WG_SRC_IP:+src "$WG_SRC_IP"} 2>/dev/null || true
-    fi
+    # mesh node net (10.90.0.0/24): route the whole auto-mesh /32 pool into the
+    # tunnel so the dashboard/nodes are reachable by their mesh address from
+    # behind the router (10.90.x is outside MESH_CIDR 10.8.0.0/16). The entry
+    # gateway forwards us into the mesh. Supersedes the old per-/32 MESH_DASHBOARD_URL
+    # route, which was never wired (nothing set MESH_DASHBOARD_URL).
+    ip -4 route replace "$MESH_NODE_CIDR" dev "$VPN_IFACE" ${WG_SRC_IP:+src "$WG_SRC_IP"} 2>/dev/null || true
     for _ip in $DOH_IPS; do pin_route "$_ip" "$VPN_IFACE" "$WG_SRC_IP"; done
     if ensure_ipsum; then :
     elif [ "$IPSUM_FALLBACK_SKIP" = "1" ]; then
