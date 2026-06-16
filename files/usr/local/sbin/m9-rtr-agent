@@ -6,6 +6,10 @@
 # When the policy rev moves, it persists the response to $POLICY_JSON and runs
 # wg-split-apply, which regenerates the nft/dnsmasq layer and routing.
 #
+# Mesh support: if MESH_DASHBOARD_URL is set and the primary DASHBOARD_URL is
+# unreachable, the agent falls back to the mesh path (10.90.x.x). On reboot it
+# remembers the last working URL from /tmp/m9-rtr-last-url.
+#
 # Pure busybox: curl + jsonfilter. Runs under procd (see /etc/init.d/m9-rtr-agent).
 set -u
 . /usr/local/lib/wg-split/common.sh
@@ -13,25 +17,39 @@ set -u
 [ -n "${DASHBOARD_URL:-}" ] || die "DASHBOARD_URL not set in $CONF_FILE"
 [ -n "${ROUTER_TOKEN:-}" ]  || die "ROUTER_TOKEN not set in $CONF_FILE"
 INTERVAL="${AGENT_INTERVAL:-30}"
-# Default AGENT_TLS_INSECURE to 0 (strict validation) for public domains,
-# but default to 1 (insecure) if connecting over the WireGuard mesh IP (10.8.0.0/16)
-# or the split.local alias, where the underlying tunnel already provides peer authentication.
-_host="$(echo "$DASHBOARD_URL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
-_fallback=0
-if echo "$_host" | grep -qE '^10\.8\.[0-9]+\.[0-9]+$'; then
-    _fallback=1
-elif [ "$_host" = "split.local" ]; then
-    _fallback=1
-fi
-INSECURE=""; [ "${AGENT_TLS_INSECURE:-$_fallback}" = "1" ] && INSECURE="-k"
-SYNC_URL="${DASHBOARD_URL%/}/api/rtr/sync"
+# MESH_DASHBOARD_URL is the dashboard's mesh /32 address (set by the mesh roster).
+# Used as a fallback when the public path is unreachable.
+MESH_URL="${MESH_DASHBOARD_URL:-}"
+LAST_URL_FILE="/tmp/m9-rtr-last-url"
+
+# Determine TLS insecure mode: strict for public, insecure for WG-internal addresses
+_insecure_check() {
+    _h="$(echo "$1" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+    case "$_h" in
+        10.8.*|10.90.*|10.91.*|split.local) echo 1 ;;
+        *) echo 0 ;;
+    esac
+}
+INSECURE=""; [ "${AGENT_TLS_INSECURE:-}" = "1" ] && INSECURE="-k"
 RESP="/tmp/m9-rtr-sync.json"
+
+# Determine which URL to use: last working > primary > mesh fallback
+ACTIVE_URL="$DASHBOARD_URL"
+if [ -r "$LAST_URL_FILE" ]; then
+    _saved="$(cat "$LAST_URL_FILE" 2>/dev/null)"
+    [ -n "$_saved" ] && ACTIVE_URL="$_saved"
+fi
+
+# Build sync URL from active URL
+SYNC_URL="${ACTIVE_URL%/}/api/rtr/sync"
+# If INSECURE not explicitly set, auto-detect from active URL
+[ -z "${AGENT_TLS_INSECURE:-}" ] && INSECURE=""; [ "$(_insecure_check "$ACTIVE_URL")" = "1" ] && INSECURE="-k"
 
 # Capabilities this agent advertises in every status report so the dashboard
 # negotiates features by what we support instead of guessing from our version
 # (see m9-core/manifest.yaml). Comma-separated; additive — an older dashboard
 # simply ignores the field. Keep in sync with capabilities.router_sync there.
-CAPS="slim,telemetry,auto_update,backoff,caps"
+CAPS="slim,telemetry,auto_update,backoff,caps,mesh"
 
 applied_rev() { [ -r "$POLICY_ENV" ] && . "$POLICY_ENV"; echo "${APPLIED_REV:-0}"; }
 
@@ -142,13 +160,32 @@ sync_once() {
         DEV_FIELD=",\"devices\":$(devices_json)"
     fi
     body="$(build_status)"
-    if ! curl $INSECURE -fsS --max-time 20 \
-            -H "X-Router-Token: $ROUTER_TOKEN" \
-            -H "Content-Type: application/json" \
-            -X POST --data "$body" "$SYNC_URL" -o "$RESP" 2>/dev/null; then
-        warn "sync failed: unreachable $SYNC_URL"
-        return 1
-    fi
+    # Try active URL first; on failure, fall back to mesh URL
+    _try_url="$ACTIVE_URL"
+    _try_insecure="$INSECURE"
+    _ok=0
+    while [ "$_ok" = "0" ]; do
+        _sync="${_try_url%/}/api/rtr/sync"
+        [ -z "${AGENT_TLS_INSECURE:-}" ] && _try_insecure=""; [ "$(_insecure_check "$_try_url")" = "1" ] && _try_insecure="-k"
+        if curl $_try_insecure -fsS --max-time 20 \
+                -H "X-Router-Token: $ROUTER_TOKEN" \
+                -H "Content-Type: application/json" \
+                -X POST --data "$body" "$_sync" -o "$RESP" 2>/dev/null; then
+            _ok=1
+            # Remember working URL for next reboot
+            if [ "$_try_url" != "$ACTIVE_URL" ]; then
+                ACTIVE_URL="$_try_url"
+                echo "$ACTIVE_URL" > "$LAST_URL_FILE"
+                log "switched to mesh endpoint: $ACTIVE_URL"
+            fi
+        elif [ -n "$MESH_URL" ] && [ "$_try_url" != "$MESH_URL" ]; then
+            log "primary unreachable, trying mesh fallback"
+            _try_url="$MESH_URL"
+        else
+            warn "sync failed: unreachable $_sync"
+            return 1
+        fi
+    done
     [ "$(jsonfilter -i "$RESP" -e '@.ok' 2>/dev/null)" = "true" ] || {
         warn "sync rejected: $(jsonfilter -i "$RESP" -e '@.error' 2>/dev/null || echo '?')"
         return 1
@@ -184,11 +221,22 @@ sync_once() {
         #     IS curl's, so requiring it (plus a non-empty file) rejects both the
         #     partial-transfer and the redirect/error-body cases.
         #  3. the HTTP status must be 2xx (a clean 3xx/4xx/5xx response is refused).
-        if _code="$(curl $INSECURE -sS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
+        # TLS-insecure flag must follow the update_url's host (under DASHBOARD_URL),
+        # not whichever URL the active sync used — otherwise a public/mesh mismatch
+        # makes the download fail with a TLS error.
+        _up_insecure=""; [ "$(_insecure_check "$update_url")" = "1" ] && _up_insecure="-k"
+        if _code="$(curl $_up_insecure -sS --max-time 60 -H "X-Router-Token: $ROUTER_TOKEN" \
                     -o /tmp/agent-update.sh -w '%{http_code}' "$update_url" 2>/dev/null)" \
            && [ -s /tmp/agent-update.sh ]; then
             case "${_code:-000}" in
                 2[0-9][0-9])
+                    # 4th guard: a 200 can still be an HTML error/captive-portal page.
+                    # Require a shell shebang so we never `sh` arbitrary non-script bodies.
+                    if ! head -c 9 /tmp/agent-update.sh | grep -q '^#!/bin/sh'; then
+                        rm -f /tmp/agent-update.sh
+                        warn "auto-update refused: payload is not a /bin/sh script"
+                        return 0
+                    fi
                     # procd respawns us after exit; the update script also restarts the service
                     sh /tmp/agent-update.sh >/dev/null 2>&1 &
                     exit 0 ;;
@@ -215,7 +263,9 @@ sync_once() {
             return 0
         fi
         log "policy rev $cur -> $new (or endpoints/portal changed); applying"
-        cp "$RESP" "$POLICY_JSON"
+        # atomic: wg-split-apply / watchdog read $POLICY_JSON concurrently from
+        # cron — a half-written copy parses as empty and yields an all-WAN ruleset
+        cp "$RESP" "$POLICY_JSON.tmp" && mv "$POLICY_JSON.tmp" "$POLICY_JSON"
         /usr/local/sbin/wg-split-apply >/dev/null 2>&1 \
             && log "policy rev $new applied" \
             || warn "wg-split-apply failed for rev $new"

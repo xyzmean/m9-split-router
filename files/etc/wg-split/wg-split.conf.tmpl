@@ -26,6 +26,14 @@ DIRECT_SET="wg_split_direct_v4"
 POLICY_NFT_FILE="/etc/nftables.d/30-wg-split.nft"
 DNSMASQ_NFTSET_FILE="/tmp/dnsmasq.d/wg-split-domains.conf"
 
+# ---- mesh (auto-mesh integration) ----
+# MESH_CIDR is the WG mesh range (10.8.0.0/16) — route for mesh reachability
+MESH_CIDR="10.8.0.0/16"
+# MESH_NODE_CIDR is the node /32 pool (10.90.0.0/24) — used for anti-loop and routing
+MESH_NODE_CIDR="10.90.0.0/24"
+# MESH_DASHBOARD_URL is the dashboard's mesh /32 address (set by mesh roster via sync)
+MESH_DASHBOARD_URL=""
+
 # ---- health ----
 HEALTH_METHOD="ping"
 HEALTH_PING_TARGETS="8.8.8.8 1.1.1.1"

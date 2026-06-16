@@ -15,6 +15,14 @@ probe_ping() {
     done
     return 1
 }
+# Mesh health probe: ping the dashboard's mesh /32 address if configured.
+# Returns 0 if reachable, 1 if not (or not configured).
+probe_mesh() {
+    [ -z "$MESH_DASHBOARD_URL" ] && return 1
+    _mesh_host="$(echo "$MESH_DASHBOARD_URL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+    [ -z "$_mesh_host" ] && return 1
+    ping -I "$VPN_IFACE" -c 1 -W 2 -q "$_mesh_host" >/dev/null 2>&1
+}
 probe_curl() {
     curl --interface "$VPN_IFACE" --max-time "$HEALTH_CURL_TIMEOUT" -fsS \
         -o /dev/null "$HEALTH_CURL_URL" >/dev/null 2>&1
@@ -66,6 +74,12 @@ set_vpn() {
     # kernel creates no on-link route — without this, traffic FROM the mesh
     # (dashboard ssh/ping, other nodes) gets answered out the WAN and dies.
     ip -4 route replace "$MESH_CIDR" dev "$VPN_IFACE" ${WG_SRC_IP:+src "$WG_SRC_IP"} 2>/dev/null || true
+    # mesh node /32 route: if we know the dashboard's mesh address, add a
+    # specific /32 route so mesh health probes can reach it.
+    _mesh_dash="$(echo "$MESH_DASHBOARD_URL" | sed -n 's#https\?://\([^:/]*\).*#\1#p')"
+    if [ -n "$_mesh_dash" ] && echo "$_mesh_dash" | grep -qE '^10\.90\.'; then
+        ip -4 route replace "$_mesh_dash/32" dev "$VPN_IFACE" ${WG_SRC_IP:+src "$WG_SRC_IP"} 2>/dev/null || true
+    fi
     for _ip in $DOH_IPS; do pin_route "$_ip" "$VPN_IFACE" "$WG_SRC_IP"; done
     if ensure_ipsum; then :
     elif [ "$IPSUM_FALLBACK_SKIP" = "1" ]; then

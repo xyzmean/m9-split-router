@@ -22,6 +22,12 @@ DIRECT_SET="${DIRECT_SET:-wg_split_direct_v4}"
 # an explicit route the router has NO return path to the mesh (only the
 # dashboard host-route the watchdog pins) — mesh ssh/ping would time out.
 MESH_CIDR="${MESH_CIDR:-10.8.0.0/16}"
+# Node CIDR for the auto-mesh (10.90.x.x). Used for mesh health probes and
+# anti-loop rules when the tunnel endpoint is a mesh address.
+MESH_NODE_CIDR="${MESH_NODE_CIDR:-10.90.0.0/24}"
+# Dashboard's mesh /32 address (set by the mesh roster via /api/rtr/sync).
+# Used as a fallback sync endpoint and for mesh health probing.
+MESH_DASHBOARD_URL="${MESH_DASHBOARD_URL:-}"
 
 log()  { logger -t "${LOG_TAG:-wg-split}" "$*"; }
 die()  { log "ERROR: $*"; echo "ERROR: $*" >&2; exit 1; }
