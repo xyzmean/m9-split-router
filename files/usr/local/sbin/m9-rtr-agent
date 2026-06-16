@@ -124,12 +124,12 @@ build_status() {
     _mtu="$(cat /var/run/wg-split-mtu 2>/dev/null || echo 1280)"
     # slim=1: the dashboard omits policy+endpoints unless our applied rev is
     # stale, the portal host moved, or we ask for a full reply (lost endpoints)
-    _need_full=0
-    [ -n "$(jsonfilter -i "$POLICY_JSON" -e '@.endpoints[0].name' 2>/dev/null)" ] || _need_full=1
+    _need_full=false
+    [ -n "$(jsonfilter -i "$POLICY_JSON" -e '@.endpoints[0].name' 2>/dev/null)" ] || _need_full=true
     _portal="$(jsonfilter -i "$POLICY_JSON" -e '@.portal_host' 2>/dev/null)"
     printf '"applied_rev":%s,"handshake_age":%s,"rx":%s,"tx":%s,"entry":"%s","mtu":%s,"error":"%s",' \
            "$(applied_rev)" "$_hsage" "$_rx" "$_tx" "${_entry:-}" "$_mtu" "$_err"
-    printf '"slim":1,"need_full":%s,"portal_host":"%s","caps":"%s"%s%s}' \
+    printf '"slim":true,"need_full":%s,"portal_host":"%s","caps":"%s"%s%s}' \
            "$_need_full" "$_portal" "$CAPS" "$TELEMETRY_FIELD" "$DEV_FIELD"
 }
 
