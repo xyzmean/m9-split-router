@@ -24,8 +24,8 @@ RUN ./scripts/feeds update luci packages base \
  && make -j"$(nproc)" V=s \
         package/nftables/compile \
         package/curl/compile \
-        package/dnsmasq-full/compile \
-        package/ip-full/compile \
+        package/dnsmasq/compile \
+        package/iproute2/compile \
         package/luci-base/compile
 
 # Our local feed — changes here (every fix) only invalidate the cheap layers
