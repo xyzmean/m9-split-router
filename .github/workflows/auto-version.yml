@@ -1,4 +1,5 @@
 name: Auto Version
+
 on:
   push:
     branches:
@@ -11,6 +12,8 @@ permissions:
 jobs:
   version:
     runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.tag_version.outputs.new_tag }}
     steps:
       - uses: actions/checkout@v3
         with:
@@ -38,3 +41,37 @@ jobs:
           git add VERSION
           git commit -m "chore: bump version to ${{ steps.tag_version.outputs.new_version }} [skip ci]" || true
           git push
+
+  # Build the .apk and attach to the release here, in the same workflow — a tag
+  # pushed by GITHUB_TOKEN above would NOT trigger build.yml's tag event.
+  packages:
+    needs: version
+    if: needs.version.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      # check out main (after the VERSION bump) so the package version matches the tag
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Build with OpenWrt SDK
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: aarch64_cortex-a53-25.12.4
+          FEEDNAME: wgsplit
+          PACKAGES: wg-split luci-app-wg-split
+          V: s
+
+      - name: Collect packages
+        run: |
+          mkdir -p artifacts
+          find bin/ \( -name 'wg-split*.apk' -o -name 'luci-app-wg-split*.apk' \
+                     -o -name 'wg-split*.ipk' -o -name 'luci-app-wg-split*.ipk' \) \
+               -exec cp -v {} artifacts/ \;
+          ls -l artifacts
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.new_tag }}
+          files: artifacts/*
