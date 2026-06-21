@@ -1,0 +1,15 @@
+{
+	"luci-app-wg-split": {
+		"description": "Grant access to wg-split configuration",
+		"read": {
+			"uci": [ "wg-split", "network" ],
+			"ubus": {
+				"network.interface": [ "dump" ],
+				"network": [ "get_proto_handlers" ]
+			}
+		},
+		"write": {
+			"uci": [ "wg-split" ]
+		}
+	}
+}

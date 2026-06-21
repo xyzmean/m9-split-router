@@ -1,0 +1,13 @@
+{
+	"admin/services/wg-split": {
+		"title": "wg-split",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "wg-split/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-wg-split" ]
+		}
+	}
+}
