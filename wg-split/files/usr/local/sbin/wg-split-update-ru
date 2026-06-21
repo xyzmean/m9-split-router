@@ -5,7 +5,7 @@
 # Optional: if RU_NFT_FILE is set AND an operator has wired a chain that
 # uses RU_SET, the same command-stream refresh writes there too.
 
-set -eu
+set -e   # fail-fast on curl/validation; no `-u`, /lib/functions.sh isn't nounset-safe
 . /usr/local/lib/wg-split/common.sh
 
 [ "$RU_ENABLED" = "1" ] || { log "ru_subnets disabled (RU_ENABLED=0)"; exit 0; }

@@ -6,7 +6,7 @@
 # domains are folded into the dnsmasq nftset directives (tagged at resolve time).
 # Domains can't go in the IP-based nozapret set, so they only drive tunnel routing.
 
-set -eu
+set -e   # fail-fast on curl/validation; no `-u`, /lib/functions.sh isn't nounset-safe
 . /usr/local/lib/wg-split/common.sh
 
 TMP="/tmp/wg-split-update-domains.$$"

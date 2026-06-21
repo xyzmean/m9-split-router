@@ -10,7 +10,7 @@
 # Memory-safe: emits one compact `add element { x,y,z }` block, NOT per-line
 # `add element { x }` (which on 240MB routers OOMs at ~38k+ entries).
 
-set -eu
+set -e   # fail-fast on curl/validation; no `-u`, /lib/functions.sh isn't nounset-safe
 . /usr/local/lib/wg-split/common.sh
 
 [ "$ZAPRET_ENABLED" = "1" ] || { log "zapret disabled (ZAPRET_ENABLED=0)"; exit 0; }

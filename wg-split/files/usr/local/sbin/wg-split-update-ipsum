@@ -10,7 +10,7 @@
 # IPSUM_NFT_FILE lives OUTSIDE /etc/nftables.d/ so fw4 does not auto-include
 # it (the set definition is in /etc/nftables.d/30-wg-split.nft).
 
-set -eu
+set -e   # fail-fast on curl/validation; no `-u`, /lib/functions.sh isn't nounset-safe
 . /usr/local/lib/wg-split/common.sh
 
 [ "$IPSUM_ENABLED" = "1" ] || { log "ipsum disabled (IPSUM_ENABLED=0)"; exit 0; }
