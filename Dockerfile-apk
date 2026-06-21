@@ -1,0 +1,32 @@
+# Build the wg-split .apk packages in the OpenWrt SDK.
+#
+# Both packages are PKGARCH:=all (pure shell + LuCI files, nothing compiles), so
+# any SDK arch yields identical .apk — we use x86_64 to avoid the target kernel
+# build. The win vs openwrt/gh-action-sdk: a TARGETED `make package/<p>/compile`
+# instead of building the whole dependency tree (nftables, kernel, kmods…), plus
+# buildx layer caching of the feed setup. ~30 min -> a few minutes.
+#
+# Layer order = cache order: the external-feeds layer is cache-stable and only
+# the final VERSION-stamped compile reruns per release.
+ARG SDK=ghcr.io/openwrt/sdk:x86_64-25.12.4
+FROM ${SDK}
+
+WORKDIR /builder
+
+# Cache-stable: external feeds (invalidated only when the base SDK changes).
+RUN ./scripts/feeds update luci packages base
+
+# Our local feed.
+COPY --chown=buildbot:buildbot wg-split          feed/wg-split
+COPY --chown=buildbot:buildbot luci-app-wg-split feed/luci-app-wg-split
+RUN echo "src-link wgsplit /builder/feed" >> feeds.conf.default \
+ && ./scripts/feeds update wgsplit \
+ && ./scripts/feeds install -p wgsplit wg-split luci-app-wg-split
+
+# Stamp the release version, then build only our two packages (deps are resolved
+# from installed feed metadata, NOT compiled).
+ARG VERSION=0.0.0
+RUN sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${VERSION}/" \
+        feed/wg-split/Makefile feed/luci-app-wg-split/Makefile \
+ && make defconfig \
+ && make package/wg-split/compile package/luci-app-wg-split/compile V=s
