@@ -15,8 +15,9 @@ jobs:
       fail-fast: false
       matrix:
         # PKGARCH=all packages, so one target is enough; 24.10 = .apk output.
+        # Default target: MediaTek filogic (e.g. Redmi AX3000T / MT7981) -> aarch64_cortex-a53.
         arch:
-          - x86_64-24.10.0
+          - aarch64_cortex-a53-24.10.0
     steps:
       - uses: actions/checkout@v4
 
