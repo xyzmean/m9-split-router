@@ -28,8 +28,14 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
   | sort -u > "$TMP/all.lst"
 
 count=$(wc -l < "$TMP/all.lst")
-[ "$count" -ge "$ZAPRET_NOZAPRET_MIN" ] \
-    || die "too few entries: $count (need $ZAPRET_NOZAPRET_MIN)"
+# The min-count floor guards the NORMAL set against a botched list refresh. In
+# degradation mode (INCLUDE_VPN=0) we are deliberately shrinking the set to evict
+# the VPN/ipsum prefixes so zapret DPI-bypasses them on WAN — aborting here would
+# leave the previous (ipsum-laden) set in place and defeat the fallback, so the
+# floor is enforced only when the VPN set is included.
+if [ "$INCLUDE_VPN" = "1" ] && [ "$count" -lt "$ZAPRET_NOZAPRET_MIN" ]; then
+    die "too few entries: $count (need $ZAPRET_NOZAPRET_MIN)"
+fi
 
 {
     printf 'flush set %s %s\n' "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET"
