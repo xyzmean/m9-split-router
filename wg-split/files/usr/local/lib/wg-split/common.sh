@@ -31,6 +31,11 @@ config_get        DIRECT_DOMAINS  global direct_domain   ''
 WG_TABLE="200"
 WG_MARK="0x40000";        WG_MARK_MASK="0x40000";   WG_RULE_PRIO="999"
 ANTI_LOOP_MARK="0x10000"; ANTI_LOOP_MASK="0x10000"; ANTI_LOOP_PRIO="1000"
+# Isolated table+rule for health probes: the endpoints run route_allowed_ips=0
+# (so an ifup can't hijack main routes), which also means they have no main-table
+# route to public targets — the probe installs a scoped route via the candidate's
+# own source IP for the duration of the ping. Prio above the wg mark rule.
+PROBE_TABLE="201"; PROBE_PRIO="998"
 DOH_IPS="8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112"
 
 VPN_SET="wg_split_vpn_v4"

@@ -8,6 +8,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# needed by softprops/action-gh-release to attach the .apk to a tagged release
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest

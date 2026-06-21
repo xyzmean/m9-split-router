@@ -26,9 +26,10 @@ DIRECT_CIDRS="$(clean_cidrs "$DIRECT_CIDRS")"
 # its AllowedIPs (often 0.0.0.0/0) into the MAIN table and hijacks WAN/direct
 # traffic — including when we merely bring a candidate up to probe it. Force it
 # off on every configured endpoint (idempotent; reload network only on change).
-# OpenWrt's wireguard/amneziawg proto reads route_allowed_ips PER PEER (the
-# `@wireguard_<iface>[N]` / `@amneziawg_<iface>[N]` sections), not off the
-# interface — so clear it on every peer section (plus the iface, harmlessly).
+# OpenWrt's wireguard/amneziawg proto reads route_allowed_ips PER PEER (sections
+# of type `wireguard_<iface>` / `amneziawg_<iface>`), not off the interface — so
+# clear it on every peer section (anonymous `@wireguard_<iface>[N]` AND named
+# `network.<name>=wireguard_<iface>`), plus the iface itself, harmlessly.
 _net_changed=0
 _clear_rai() {
     [ "$(uci -q get "network.$1.route_allowed_ips")" = "0" ] && return
@@ -37,11 +38,18 @@ _clear_rai() {
 for _if in $(endpoints_by_priority); do
     _clear_rai "$_if"
     for _sec in $(uci show network 2>/dev/null \
-            | sed -n "s/^network\.\(@\(wireguard\|amneziawg\)_${_if}\[[0-9]*\]\)=.*/\1/p"); do
+            | sed -n "s/^network\.\([^=]*\)=\(wireguard\|amneziawg\)_${_if}\$/\1/p"); do
         _clear_rai "$_sec"
     done
 done
 if [ "$_net_changed" = 1 ]; then
+    # The reload bounces the WG devices; under killswitch that empties table 200
+    # before the failover pass can fail-closed, so blackhole it FIRST to avoid a
+    # WAN leak (failover lifts it on recovery).
+    if [ "$KILLSWITCH" = "1" ]; then
+        ip -4 rule add fwmark "$WG_MARK/$WG_MARK_MASK" table "$WG_TABLE" priority "$WG_RULE_PRIO" 2>/dev/null || true
+        ip -4 route replace blackhole default table "$WG_TABLE" 2>/dev/null || true
+    fi
     uci -q commit network
     /etc/init.d/network reload >/dev/null 2>&1 || true
     log "forced route_allowed_ips=0 on endpoints (wg-split owns routing)"

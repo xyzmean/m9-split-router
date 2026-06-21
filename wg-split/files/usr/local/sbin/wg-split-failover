@@ -24,13 +24,28 @@ set -u
 # ---- health probing --------------------------------------------------------
 iface_present() { ip link show dev "$1" >/dev/null 2>&1; }
 
-# ping a health target THROUGH a specific iface (forces output device, so the
-# live routing table is irrelevant — safe to probe a candidate in parallel).
+# Health-probe an iface end-to-end. Because endpoints run route_allowed_ips=0,
+# they have no main-table route to public targets, and a locally-generated ping
+# is not policy-routed through table 200 — so `ping -I iface` alone would find no
+# route. Install an ISOLATED probe route (default via the iface in PROBE_TABLE,
+# selected by the iface's own source IP) for the duration of the ping. This works
+# for the active iface and parallel candidates alike, and touches neither the main
+# table, table 200, nor the DoH pins.
 health_ping() {
+    _hpif="$1"; _hpsrc="$(iface_src_ip "$_hpif")"
+    [ -n "$_hpsrc" ] || return 1
+    ip -4 rule del from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
+    ip -4 route replace default dev "$_hpif" table "$PROBE_TABLE" 2>/dev/null || true
+    ip -4 rule add from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
+    _hpok=1
     for _t in $HEALTH_TARGETS; do
-        ping -c "$HEALTH_PING_COUNT" -W "$HEALTH_PING_TIMEOUT" -I "$1" -q "$_t" >/dev/null 2>&1 && return 0
+        if ping -c "$HEALTH_PING_COUNT" -W "$HEALTH_PING_TIMEOUT" -I "$_hpif" -q "$_t" >/dev/null 2>&1; then
+            _hpok=0; break
+        fi
     done
-    return 1
+    ip -4 rule del from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
+    ip -4 route flush table "$PROBE_TABLE" 2>/dev/null || true
+    return "$_hpok"
 }
 
 # WAN reachability (default route / no iface bind) — for zapret vs wan rung.
@@ -87,8 +102,8 @@ ensure_zapret_running() {
 rebuild_nozapret() {
     [ "$ZAPRET_ENABLED" = "1" ] || return 0
     zapret_available || return 0
-    [ -x /usr/local/sbin/wg-split-sync-nozapret ] || return 0
-    NOZAPRET_INCLUDE_VPN="$1" /usr/local/sbin/wg-split-sync-nozapret >/dev/null 2>&1 || true
+    [ -x /usr/local/sbin/wg-split-sync-nozapret ] || return 1
+    NOZAPRET_INCLUDE_VPN="$1" /usr/local/sbin/wg-split-sync-nozapret >/dev/null 2>&1
 }
 
 # ---- ipsum set self-heal (live set drained by a fw4 reload) -----------------
@@ -165,10 +180,14 @@ degrade() {   # no tunnel healthy
     clear_doh
     if [ "$ZAPRET_ENABLED" = "1" ] && zapret_available; then
         ensure_zapret_running
-        rebuild_nozapret 0
-        # only claim the zapret rung if nfqws actually came up — availability
-        # (init script / binary present) doesn't mean it's running.
-        if zapret_running && wan_healthy; then write_state "zapret"; else write_state "wan"; fi
+        # Only claim the zapret rung if the nozapret sync SUCCEEDED (else the VPN
+        # prefixes stay exempt from bypass) AND nfqws is actually running — mere
+        # availability (init/binary present) doesn't mean it came up.
+        if rebuild_nozapret 0 && zapret_running && wan_healthy; then
+            write_state "zapret"
+        else
+            write_state "wan"
+        fi
     else
         write_state "wan"
     fi
