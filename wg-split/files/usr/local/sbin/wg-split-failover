@@ -235,6 +235,14 @@ tick() {
 # ---- entry ------------------------------------------------------------------
 if [ "${1:-}" = "--daemon" ]; then
     [ -x /usr/local/sbin/wg-split-apply ] && /usr/local/sbin/wg-split-apply >/dev/null 2>&1 || true
+    # First-run / lost-list self-heal: a list that was never downloaded (file
+    # missing) gets fetched now in the background instead of waiting for the
+    # daily cron. The updaters check enabled/URL themselves and re-apply on
+    # success, so this only does work when a file is actually absent.
+    ( [ -s "$IPSUM_NFT_FILE" ]   || /usr/local/sbin/wg-split-update-ipsum
+      [ -s "$RU_FILE" ]          || /usr/local/sbin/wg-split-update-ru
+      [ -s "$DOMAINS_VPN_FILE" ] || /usr/local/sbin/wg-split-update-domains
+    ) >/dev/null 2>&1 &
     while :; do
         tick
         _iv="$(uci -q get wg-split.global.interval 2>/dev/null)"

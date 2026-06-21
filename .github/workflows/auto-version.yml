@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.tag_version.outputs.new_tag }}
+      new_version: ${{ steps.tag_version.outputs.new_version }}
     steps:
       - uses: actions/checkout@v3
         with:
@@ -54,19 +55,27 @@ jobs:
         with:
           ref: main
 
-      - name: Build with OpenWrt SDK
-        uses: openwrt/gh-action-sdk@main
-        env:
-          ARCH: aarch64_cortex-a53-25.12.4
-          FEEDNAME: wgsplit
-          PACKAGES: wg-split luci-app-wg-split
-          V: s
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Collect packages
+      - name: Build packages in OpenWrt SDK
+        uses: docker/build-push-action@v6
+        with:
+          file: ./Dockerfile-apk
+          context: .
+          load: true
+          tags: wg-split:rel
+          build-args: |
+            VERSION=${{ needs.version.outputs.new_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract built packages
         run: |
           mkdir -p artifacts
-          find bin/ \( -name 'wg-split*.apk' -o -name 'luci-app-wg-split*.apk' \
-                     -o -name 'wg-split*.ipk' -o -name 'luci-app-wg-split*.ipk' \) \
+          id=$(docker create wg-split:rel)
+          docker cp "$id:/builder/bin/packages/." ./out/
+          docker rm "$id"
+          find ./out \( -name 'wg-split*.apk' -o -name 'luci-app-wg-split*.apk' \) \
                -exec cp -v {} artifacts/ \;
           ls -l artifacts
 
