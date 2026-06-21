@@ -13,6 +13,9 @@
 set -eu
 . /usr/local/lib/wg-split/common.sh
 
+[ "$IPSUM_ENABLED" = "1" ] || { log "ipsum disabled (IPSUM_ENABLED=0)"; exit 0; }
+[ -n "$IPSUM_URL" ] || die "no ipsum_url configured"
+
 BACKUP_DIR="${BACKUP_DIR:-/root/wg-split-backup-ipsum}"
 TMP="/tmp/wg-split-update-ipsum.$$"
 mkdir -p "$TMP" "$(dirname "$IPSUM_FILE")" "$(dirname "$IPSUM_NFT_FILE")" "$BACKUP_DIR"

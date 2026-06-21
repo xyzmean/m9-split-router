@@ -5,8 +5,10 @@ set -u
 . /usr/local/lib/wg-split/common.sh
 
 echo "=== wg-split status ==="
-echo "VPN_IFACE     : $VPN_IFACE"
+echo "MODE          : $MODE"
 echo "STATE         : $(read_state)"
+echo "ACTIVE_IFACE  : $(active_iface)"
+echo "ENDPOINTS     : $(endpoints_by_priority)"
 echo "FAIL_COUNTER  : $(fail_get)"
 echo
 
@@ -34,26 +36,12 @@ nft list chain inet fw4 wg_split_ipsum_mark_prerouting 2>/dev/null \
     | sed 's/^/  /' || echo "(ipsum chain missing)"
 echo
 
-echo "=== VPN link ==="
-ip link show dev "$VPN_IFACE" 2>/dev/null | sed 's/^/  /' || echo "  (link absent)"
-echo
-
-echo "=== health probe (method=$HEALTH_METHOD) ==="
-case "$HEALTH_METHOD" in
-    ping)
-        for _t in $HEALTH_PING_TARGETS; do
-            if ping -I "$VPN_IFACE" -c 1 -W "$HEALTH_PING_TIMEOUT" -q "$_t" >/dev/null 2>&1; then
-                echo "  $_t : OK"
-            else
-                echo "  $_t : FAIL"
-            fi
-        done
-        ;;
-    curl)
-        if curl --interface "$VPN_IFACE" --max-time "$HEALTH_CURL_TIMEOUT" -fsS -o /dev/null "$HEALTH_CURL_URL"; then
-            echo "  $HEALTH_CURL_URL : OK"
-        else
-            echo "  $HEALTH_CURL_URL : FAIL"
-        fi
-        ;;
-esac
+echo "=== per-iface health (ping -I via targets: $HEALTH_TARGETS) ==="
+for _if in $(endpoints_by_priority); do
+    _hs="$(wg_handshake_age "$_if")"
+    _ok=FAIL
+    for _t in $HEALTH_TARGETS; do
+        ping -c 1 -W "$HEALTH_PING_TIMEOUT" -I "$_if" -q "$_t" >/dev/null 2>&1 && { _ok=OK; break; }
+    done
+    printf '  %-8s handshake=%ss ping=%s\n' "$_if" "$_hs" "$_ok"
+done

@@ -9,6 +9,7 @@ set -eu
 . /usr/local/lib/wg-split/common.sh
 
 [ "$RU_ENABLED" = "1" ] || { log "ru_subnets disabled (RU_ENABLED=0)"; exit 0; }
+[ -n "$RU_URL" ] || die "no ru_url configured"
 
 BACKUP_DIR="${BACKUP_DIR:-/root/wg-split-backup-ru}"
 TMP="/tmp/wg-split-update-ru.$$"

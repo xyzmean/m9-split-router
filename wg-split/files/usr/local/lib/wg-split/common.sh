@@ -87,12 +87,19 @@ top_endpoint() { endpoints_by_priority | awk '{print $1}'; }
 read_state()  { cat "$STATE_FILE" 2>/dev/null || true; }
 write_state() { printf '%s\n' "$1" > "$STATE_FILE"; }
 # iface currently carrying VPN traffic (from state), else top-priority endpoint.
+# A saved iface that is no longer a configured endpoint (removed/renamed in UCI)
+# is ignored so we never probe/route a stale device.
 active_iface() {
     _s="$(read_state)"
     case "$_s" in
-        vpn:*) echo "${_s#vpn:}" ;;
-        *)     top_endpoint ;;
+        vpn:*)
+            _cur="${_s#vpn:}"
+            case " $(endpoints_by_priority) " in
+                *" $_cur "*) echo "$_cur"; return ;;
+            esac
+            ;;
     esac
+    top_endpoint
 }
 # VPN_IFACE keeps backward-compat for scripts that reference a single iface
 # (apply/status). It is the live active iface, or the top-priority one at boot.

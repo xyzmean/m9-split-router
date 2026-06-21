@@ -1,6 +1,11 @@
 #!/bin/sh
 # wg-split-sync-nozapret — rebuild zapret's nozapret bypass set from:
-#   ZAPRET_PRIVATES + RU file + IPSUM file
+#   ZAPRET_PRIVATES + RU file [+ IPSUM/VPN file]
+#
+# nozapret = IPs zapret must NOT touch. The VPN (ipsum) IPs are included while a
+# tunnel is up (they're tunneled, so zapret should leave them alone). On full
+# tunnel failure, wg-split-failover calls us with NOZAPRET_INCLUDE_VPN=0 so those
+# IPs DROP OUT of nozapret and zapret DPI-bypasses them on WAN egress.
 #
 # Memory-safe: emits one compact `add element { x,y,z }` block, NOT per-line
 # `add element { x }` (which on 240MB routers OOMs at ~38k+ entries).
@@ -9,6 +14,7 @@ set -eu
 . /usr/local/lib/wg-split/common.sh
 
 [ "$ZAPRET_ENABLED" = "1" ] || { log "zapret disabled (ZAPRET_ENABLED=0)"; exit 0; }
+INCLUDE_VPN="${NOZAPRET_INCLUDE_VPN:-1}"
 
 TMP="/tmp/wg-split-sync-nozapret.$$"
 mkdir -p "$TMP"
@@ -16,8 +22,8 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 
 {
     for p in $ZAPRET_PRIVATES; do echo "$p"; done
-    [ -r "$RU_FILE" ]    && cat "$RU_FILE"    || true
-    [ -r "$IPSUM_FILE" ] && cat "$IPSUM_FILE" || true
+    [ -r "$RU_FILE" ] && cat "$RU_FILE" || true
+    [ "$INCLUDE_VPN" = "1" ] && [ -r "$IPSUM_FILE" ] && cat "$IPSUM_FILE" || true
 } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' \
   | sort -u > "$TMP/all.lst"
 
