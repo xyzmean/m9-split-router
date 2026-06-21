@@ -102,6 +102,17 @@ ensure_ipsum() {
     warn "ipsum reload failed"; return 1
 }
 
+# ru set self-heal — only relevant in full mode, where RU_SET is defined and
+# carries the direct exception; replay it if a fw4 reload drained the live set.
+ensure_ru() {
+    [ "$MODE" = "full" ] && [ "$RU_ENABLED" = "1" ] || return 0
+    [ -s "$RU_NFT_FILE" ] || return 0
+    nft list set "$RU_TABLE" "$RU_SET" >/dev/null 2>&1 || return 0
+    _cnt=$(set_count "$RU_TABLE" "$RU_SET")
+    [ "${_cnt:-0}" -ge "$RU_MIN_COUNT" ] && return 0
+    nft -f "$RU_NFT_FILE" 2>/dev/null || true
+}
+
 # ---- routing ----------------------------------------------------------------
 common_rules() {
     ensure_rule "$ANTI_LOOP_PRIO" "fwmark $ANTI_LOOP_MARK/$ANTI_LOOP_MASK lookup main" \
@@ -122,6 +133,7 @@ set_vpn() {   # $1 = healthy iface to carry policy-VPN traffic
     ip -4 route replace default dev "$_if" table "$WG_TABLE"
     for _ip in $DOH_IPS; do pin_route "$_ip" "$_if" "$_src"; done
     ensure_ipsum
+    ensure_ru
     # start zapret FIRST so the inet zapret/nozapret set exists before we sync it
     # (a sync against a not-yet-created set fails silently and leaves a stale set)
     ensure_zapret_running
@@ -154,7 +166,9 @@ degrade() {   # no tunnel healthy
     if [ "$ZAPRET_ENABLED" = "1" ] && zapret_available; then
         ensure_zapret_running
         rebuild_nozapret 0
-        if wan_healthy; then write_state "zapret"; else write_state "wan"; fi
+        # only claim the zapret rung if nfqws actually came up — availability
+        # (init script / binary present) doesn't mean it's running.
+        if zapret_running && wan_healthy; then write_state "zapret"; else write_state "wan"; fi
     else
         write_state "wan"
     fi

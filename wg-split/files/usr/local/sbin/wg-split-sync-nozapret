@@ -14,7 +14,18 @@ set -eu
 . /usr/local/lib/wg-split/common.sh
 
 [ "$ZAPRET_ENABLED" = "1" ] || { log "zapret disabled (ZAPRET_ENABLED=0)"; exit 0; }
-INCLUDE_VPN="${NOZAPRET_INCLUDE_VPN:-1}"
+# An explicit caller (failover) sets NOZAPRET_INCLUDE_VPN. When unset (daily cron
+# / ipsum-ru refresh cascade), derive it from the live state so a refresh while in
+# the zapret/wan fallback doesn't re-add the VPN prefixes and silently disable the
+# WAN DPI-bypass until the next failover tick.
+if [ -n "${NOZAPRET_INCLUDE_VPN:-}" ]; then
+    INCLUDE_VPN="$NOZAPRET_INCLUDE_VPN"
+else
+    case "$(read_state)" in
+        zapret|wan) INCLUDE_VPN=0 ;;
+        *)          INCLUDE_VPN=1 ;;
+    esac
+fi
 
 TMP="/tmp/wg-split-sync-nozapret.$$"
 mkdir -p "$TMP"
