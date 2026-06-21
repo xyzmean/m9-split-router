@@ -1,7 +1,7 @@
 #!/bin/sh
 # wg-split-status — print runtime snapshot for debugging.
 
-set -u
+# No `set -u`: OpenWrt's config_* helpers (sourced below) aren't nounset-safe.
 . /usr/local/lib/wg-split/common.sh
 
 echo "=== wg-split status ==="

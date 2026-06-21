@@ -18,7 +18,7 @@
 #
 #   wg-split-failover            one pass (also called by wg-split-apply)
 #   wg-split-failover --daemon   apply once, then loop every UCI `interval`
-set -u
+# No `set -u`: OpenWrt's config_* helpers (sourced below) aren't nounset-safe.
 . /usr/local/lib/wg-split/common.sh
 
 # ---- health probing --------------------------------------------------------

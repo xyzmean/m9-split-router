@@ -10,7 +10,7 @@
 # Marks/chains match the reference split: wg_split_endpoint_mark_prerouting @
 # mangle (anti-loop), wg_split_ipsum_mark_prerouting @ mangle+1 (policy),
 # device overrides @ mangle-2, force-direct @ mangle-1.
-set -u
+# No `set -u`: OpenWrt's config_* helpers (sourced below) aren't nounset-safe.
 . /usr/local/lib/wg-split/common.sh
 
 # Keep only bare IPv4 / IPv4-CIDR tokens — these go verbatim into the nft ruleset.
