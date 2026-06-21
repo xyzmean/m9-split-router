@@ -8,6 +8,7 @@
 # unguarded, both at load and during config_foreach/config_get at runtime. So the
 # scripts that source this file must NOT run with `set -u`, or the failover daemon
 # crash-loops every tick. Don't add `set -u` to wg-split-{failover,apply,status}.
+
 # shellcheck disable=SC1091
 . /lib/functions.sh
 config_load wg-split
