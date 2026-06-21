@@ -24,7 +24,7 @@ clean_domains() {
 }
 
 fetch_one() {  # url dest label
-    [ -n "$1" ] || { : > "$3"; return 0; }   # empty URL -> empty list (clears it)
+    [ -n "$1" ] || { : > "$2"; return 0; }   # empty URL -> clear the dest list ($2)
     curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 -o "$TMP/raw" "$1" \
         || { warn "domains fetch failed: $1"; return 1; }
     clean_domains < "$TMP/raw" > "$TMP/clean"

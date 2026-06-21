@@ -39,8 +39,11 @@ for _if in $(endpoints_by_priority); do
 done
 ep_braces="$(echo "$EP_IPS" | tr ' ' '\n' | grep -E '^[0-9]' | sort -u | paste -sd, -)"
 
-HAS_VPN=0;    { [ -n "$VPN_CIDRS" ]    || [ -n "$VPN_DOMAINS" ]; }    && HAS_VPN=1
-HAS_DIRECT=0; { [ -n "$DIRECT_CIDRS" ] || [ -n "$DIRECT_DOMAINS" ]; } && HAS_DIRECT=1
+# Also true when only a downloaded domain list is configured — otherwise the
+# VPN/direct sets (and the policy/direct chains) wouldn't be emitted, yet the
+# dnsmasq loop below writes nftset directives pointing at those very sets.
+HAS_VPN=0;    { [ -n "$VPN_CIDRS" ]    || [ -n "$VPN_DOMAINS" ]    || [ -s "$DOMAINS_VPN_FILE" ];    } && HAS_VPN=1
+HAS_DIRECT=0; { [ -n "$DIRECT_CIDRS" ] || [ -n "$DIRECT_DOMAINS" ] || [ -s "$DOMAINS_IGNORE_FILE" ]; } && HAS_DIRECT=1
 
 # Without a LAN subnet the saddr-matched chains would emit `ip saddr { }` and
 # corrupt the table (fw4 reload fails -> policy dropped). Skip those chains but

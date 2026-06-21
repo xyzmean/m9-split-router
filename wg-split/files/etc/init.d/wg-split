@@ -14,8 +14,13 @@ start_service() {
 }
 
 reload_service() {
-    # config changed: regenerate ruleset/routes immediately, daemon keeps looping
-    /usr/local/sbin/wg-split-apply >/dev/null 2>&1 || true
+    # The daemon sources UCI once at startup, so a config change (endpoints,
+    # killswitch, health targets, mode, …) needs a restart to take effect — a
+    # one-shot apply alone would leave the running daemon on the old options.
+    # The daemon re-runs wg-split-apply on startup, so this also regenerates the
+    # ruleset/routes.
+    stop
+    start
 }
 
 service_triggers() {
