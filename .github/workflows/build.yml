@@ -14,10 +14,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PKGARCH=all packages, so one target is enough; 24.10 = .apk output.
-        # Default target: MediaTek filogic (e.g. Redmi AX3000T / MT7981) -> aarch64_cortex-a53.
+        # PKGARCH=all packages, so one target is enough; 25.12 = .apk output.
+        # Target: OpenWrt 25.12.4, MediaTek filogic (e.g. Redmi AX3000T / MT7981)
+        # -> package arch aarch64_cortex-a53.
         arch:
-          - aarch64_cortex-a53-24.10.0
+          - aarch64_cortex-a53-25.12.4
     steps:
       - uses: actions/checkout@v4
 
