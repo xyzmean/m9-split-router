@@ -54,8 +54,10 @@ ZAPRET_INIT="/etc/init.d/zapret"
 ZAPRET_NOZAPRET_SET="nozapret"; ZAPRET_NOZAPRET_TABLE="inet zapret"; ZAPRET_NOZAPRET_MIN="1000"
 ZAPRET_PRIVATES="10.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 100.64.0.0/10 224.0.0.0/4 240.0.0.0/4"
 
-# health probing (ping THROUGH the tunnel iface)
-HEALTH_PING_COUNT="1"; HEALTH_PING_TIMEOUT="2"; HEALTH_CURL_TIMEOUT="5"
+# health probing (ping THROUGH the tunnel iface). count=2 so the first packet
+# can wake an idle/keepalive-less tunnel (triggers a handshake) and the second
+# still confirms it within a single probe.
+HEALTH_PING_COUNT="2"; HEALTH_PING_TIMEOUT="2"; HEALTH_CURL_TIMEOUT="5"
 # handshake wait when probing a freshly-upped candidate
 HS_WAIT="10"
 

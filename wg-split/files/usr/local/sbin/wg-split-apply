@@ -20,6 +20,23 @@ clean_cidrs() { echo "$1" | tr ' ' '\n' | grep -v '^$' | valid_cidr4; }
 VPN_CIDRS="$(clean_cidrs "$VPN_CIDRS")"
 DIRECT_CIDRS="$(clean_cidrs "$DIRECT_CIDRS")"
 
+# ---- endpoints must not self-route -----------------------------------------
+# wg-split owns routing via marks + table 200. If a tunnel interface has
+# route_allowed_ips=1 (the LuCI default for full-tunnel peers), `ifup` installs
+# its AllowedIPs (often 0.0.0.0/0) into the MAIN table and hijacks WAN/direct
+# traffic — including when we merely bring a candidate up to probe it. Force it
+# off on every configured endpoint (idempotent; reload network only on change).
+_net_changed=0
+for _if in $(endpoints_by_priority); do
+    [ "$(uci -q get "network.$_if.route_allowed_ips")" = "0" ] && continue
+    uci -q set "network.$_if.route_allowed_ips=0" && _net_changed=1
+done
+if [ "$_net_changed" = 1 ]; then
+    uci -q commit network
+    /etc/init.d/network reload >/dev/null 2>&1 || true
+    log "forced route_allowed_ips=0 on endpoints (wg-split owns routing)"
+fi
+
 # ---- nft ruleset (canonical 30-wg-split.nft) -------------------------------
 emit_set() {  # $1 set name, $2 size, stdin = cidrs
     _items="$(cat | tr '\n' ' ' | sed 's/  */, /g; s/^ *//; s/, *$//')"

@@ -21,6 +21,13 @@ reload_service() {
     # ruleset/routes.
     stop
     start
+    # A changed list URL only takes effect on the next daily cron otherwise, so
+    # refresh the lists now (background; the updaters validate + re-apply).
+    # ponytail: unconditional refetch on apply — add per-URL change detection if
+    # the re-download cost on every Save&Apply ever matters.
+    ( /usr/local/sbin/wg-split-update-ipsum
+      /usr/local/sbin/wg-split-update-ru
+      /usr/local/sbin/wg-split-update-domains ) >/dev/null 2>&1 &
 }
 
 service_triggers() {

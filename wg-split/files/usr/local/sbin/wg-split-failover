@@ -49,7 +49,9 @@ wait_handshake() {
 
 iface_healthy() {
     iface_present "$1" || return 1
-    [ "$(wg_handshake_age "$1")" -lt 150 ] 2>/dev/null || return 1
+    # health_ping is authoritative AND wakes an idle tunnel (its first packet
+    # triggers a handshake), so don't pre-reject on a stale handshake age — a
+    # keepalive-less idle peer would otherwise look dead though it still works.
     health_ping "$1"
 }
 
@@ -165,10 +167,12 @@ tick() {
 
     _cur=""; case "$(read_state)" in vpn:*) _cur="$(active_iface)" ;; esac
 
-    # killswitch: if the active tunnel is unhealthy we're about to ifdown/probe it,
-    # which empties table 200 — blackhole FIRST so nothing leaks to WAN meanwhile.
-    if [ "$KILLSWITCH" = "1" ] && [ -n "$_cur" ] && ! iface_healthy "$_cur"; then
-        fail_closed
+    # killswitch: blackhole table 200 BEFORE any disruptive ifdown/probe whenever
+    # we don't already have a healthy active tunnel — covers a stuck current iface
+    # AND a cold start / previously-down state (_cur empty), so nothing leaks to
+    # WAN during the probe window. set_vpn lifts it on recovery.
+    if [ "$KILLSWITCH" = "1" ]; then
+        if [ -z "$_cur" ] || ! iface_healthy "$_cur"; then fail_closed; fi
     fi
 
     _best=""
