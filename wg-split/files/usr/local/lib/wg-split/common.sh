@@ -3,6 +3,12 @@
 # variable names the scripts have always used. Requires: busybox ash, nft, ip,
 # logger, and OpenWrt's /lib/functions.sh (uci config helpers).
 
+# OpenWrt's /lib/functions.sh dereferences $IPKG_INSTROOT (and friends) unguarded;
+# our callers run with `set -u`, which turns that into a fatal "parameter not set"
+# and kills the failover daemon every tick. Default it before sourcing.
+# ponytail: one known-unset var; widen this if functions.sh trips on others.
+: "${IPKG_INSTROOT:=}"
+
 # shellcheck disable=SC1091
 . /lib/functions.sh
 config_load wg-split

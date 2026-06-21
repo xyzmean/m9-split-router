@@ -2,6 +2,40 @@
 'require view';
 'require form';
 'require network';
+'require fs';
+'require ui';
+'require poll';
+
+function statusPanel() {
+	var pre = E('pre', { 'style': 'white-space:pre-wrap;margin:0' }, _('Loading…'));
+
+	function refresh() {
+		return fs.exec('/usr/local/sbin/wg-split-status').then(function (res) {
+			pre.textContent = ((res.stdout || res.stderr || '').trim()) || _('(no output)');
+		}).catch(function (e) {
+			pre.textContent = _('status failed: ') + e;
+		});
+	}
+
+	poll.add(refresh, 5);
+	refresh();
+
+	var restartBtn = E('button', {
+		'class': 'btn cbi-button cbi-button-action',
+		'click': ui.createHandlerFn(this, function () {
+			return fs.exec('/etc/init.d/wg-split', ['restart']).then(function () {
+				ui.addNotification(null, E('p', _('wg-split restarted')), 'info');
+				return refresh();
+			});
+		})
+	}, _('Restart service'));
+
+	return E('div', { 'class': 'cbi-section' }, [
+		E('h3', _('Service status')),
+		E('div', { 'style': 'margin-bottom:.5em' }, [ restartBtn ]),
+		pre
+	]);
+}
 
 return view.extend({
 	load: function () {
@@ -117,6 +151,8 @@ return view.extend({
 		o.value('vpn', _('VPN'));
 		o.value('direct', _('Direct'));
 
-		return m.render();
+		return Promise.all([ statusPanel(), m.render() ]).then(function (nodes) {
+			return E('div', {}, nodes);
+		});
 	}
 });
