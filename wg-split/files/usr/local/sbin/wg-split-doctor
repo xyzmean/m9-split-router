@@ -1,0 +1,222 @@
+#!/bin/sh
+# wg-split-doctor — structured self-diagnosis: "what is broken and what to fix?"
+#
+#   wg-split-doctor          human-readable report (for SSH)
+#   wg-split-doctor --json   machine-readable (consumed by the LuCI panel)
+#
+# Every check carries a severity:
+#   OK       working as intended
+#   WARN     suboptimal / stale, not breaking routing right now
+#   FIXABLE  broken but self-heals on the next tick or via one named command
+#   FAIL     broken, needs an operator decision (firewall/config)
+# Exit code = worst severity (0 OK, 1 WARN, 2 FIXABLE, 3 FAIL) so scripts/CI gate.
+#
+# Almost every probe reuses a common.sh helper — this file is orchestration, not
+# new diagnostic logic. No `set -u`: OpenWrt's config_* helpers aren't nounset-safe.
+
+JSON=0; [ "${1:-}" = "--json" ] && JSON=1
+
+# ---- result accumulators ---------------------------------------------------
+# checks: one record per line, tab-separated SEV<TAB>CATEGORY<TAB>MSG<TAB>FIX.
+CHECKS=""; EP_JSON=""; LIST_JSON=""; WORST=0
+_rank() { case "$1" in OK) echo 0;; WARN) echo 1;; FIXABLE) echo 2;; FAIL) echo 3;; *) echo 0;; esac; }
+add() {  # SEV CATEGORY MSG [FIX]
+    CHECKS="$CHECKS$1	$2	$3	${4:-}
+"
+    _r=$(_rank "$1"); [ "$_r" -gt "$WORST" ] && WORST="$_r"
+}
+json_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }   # ponytail: fields are ASCII control text
+file_age() { _m="$(stat -c %Y "$1" 2>/dev/null || date -r "$1" +%s 2>/dev/null)"; [ -n "$_m" ] && echo $(( $(date +%s) - _m )) || echo -1; }
+STALE_AGE=172800   # 2 days — lists refresh daily at 04:xx, so older = a missed run
+
+# ---- self-test (pure logic, no router): the one runnable check. Runs BEFORE
+# sourcing common.sh so it works off-box (`WG_SPLIT_SELFTEST=1 wg-split-doctor`).
+if [ "${WG_SPLIT_SELFTEST:-0}" = "1" ]; then
+    [ "$(json_esc 'a"b\c')" = 'a\"b\\c' ] || { echo "json_esc FAIL"; exit 1; }
+    [ "$(_rank FAIL)" -gt "$(_rank FIXABLE)" ] && [ "$(_rank FIXABLE)" -gt "$(_rank WARN)" ] \
+        && [ "$(_rank WARN)" -gt "$(_rank OK)" ] || { echo "_rank order FAIL"; exit 1; }
+    echo "selftest OK"; exit 0
+fi
+
+. /usr/local/lib/wg-split/common.sh
+
+STATE="$(read_state)"; ACTIVE="$(active_iface)"; ORDERED="$(endpoints_by_priority)"
+case "$STATE" in vpn:*) PATH_KIND=vpn;; killswitch) PATH_KIND=killswitch;; zapret) PATH_KIND=zapret;; *) PATH_KIND=wan;; esac
+
+# ---- config sanity ---------------------------------------------------------
+if [ -z "$ORDERED" ]; then
+    add FAIL config "no failover tunnels configured" "add a tunnel under Services -> wg-split (Failover tunnels)"
+fi
+if [ -z "$LAN_CIDR" ]; then
+    add FAIL config "LAN subnet not set or not detected on '$LAN_IFACE' — no policy chains, all LAN traffic exits WAN" "set the LAN subnet (CIDR) or fix the LAN interface in Services -> wg-split"
+fi
+
+# ---- per-endpoint ----------------------------------------------------------
+# peer sections carrying this iface's route_allowed_ips (named + anonymous cfg).
+_peers_of() { uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=\(wireguard\|amneziawg\)_$1\$/\1/p"; }
+rai_ok() { for _s in $(_peers_of "$1"); do [ "$(uci -q get "network.$_s.route_allowed_ips" 2>/dev/null)" = "0" ] || return 1; done; return 0; }
+# priority of an iface, via common.sh's endpoint collector (emits "prio<TAB>iface").
+prio_of() { config_foreach _collect_endpoint endpoint | awk -v i="$1" '$2==i{print $1; exit}'; }
+
+LANZ="$(fw_lan_zone)"
+for _if in $ORDERED; do
+    _present=false; _hs=-1; _health=skip; _zone=""; _masq=false; _fwd=false
+    if iface_present "$_if"; then
+        _present=true
+        if health_ping "$_if" "$PROBE_TABLE_DIAG" "$PROBE_PRIO_DIAG"; then _health=OK; else _health=FAIL; add FAIL endpoint "$_if: health probe failed (no reply through the tunnel)" "check the peer endpoint/keys, or let failover pick another tunnel"; fi
+        # Sample the handshake AFTER the probe: health_ping's first packet wakes an
+        # idle keepalive-less peer and triggers a fresh handshake. Only flag a stale
+        # handshake when the probe also failed — a healthy idle tunnel legitimately
+        # has an old handshake and must not drag the overall status to WARN.
+        _hs="$(wg_handshake_age "$_if")"
+        [ "$_health" != OK ] && [ "$_hs" -gt 150 ] 2>/dev/null && add WARN endpoint "$_if: handshake stale (${_hs}s)" "tunnel idle or down — the failover loop will restart it"
+    elif [ -n "$(uci -q get "network.$_if" 2>/dev/null)" ]; then
+        # configured in /etc/config/network but the kernel link is gone (stopped /
+        # auto 0) — recoverable; failover brings candidates up with ifup.
+        add FIXABLE endpoint "$_if: configured but down (no kernel link)" "failover will bring it up, or run: ifup $_if"
+    else
+        add FAIL endpoint "$_if: interface does not exist (not configured in /etc/config/network)" "create it under Network -> Interfaces, or remove it from wg-split"
+    fi
+    # route_allowed_ips is a UCI setting, independent of link state — check it
+    # whenever the endpoint is configured, so a down endpoint can't be ifup'd with
+    # route_allowed_ips=1 and hijack the main table before wg-split-apply fixes it.
+    # (Truly-absent ifaces have no peer sections, so rai_ok is trivially clean.)
+    rai_ok "$_if" || add FIXABLE endpoint "$_if: route_allowed_ips not 0 on a peer (would hijack main routes when brought up)" "run wg-split-apply (forces route_allowed_ips=0)"
+    # firewall path (reuses fw_* helpers; these only warn — wg-split never edits fw)
+    if _zone="$(fw_zone_of_net "$_if")"; then
+        if fw_zone_has_masq "$_zone"; then _masq=true; else
+            add FAIL firewall "$_if: zone '$_zone' has masquerading disabled" "enable masq on firewall zone '$_zone'"
+        fi
+        if [ -n "$LANZ" ]; then
+            if fw_has_forwarding "$LANZ" "$_zone"; then _fwd=true; else
+                add FAIL firewall "$_if: no forwarding '$LANZ' -> '$_zone' (fw4 will REJECT LAN->tunnel)" "add firewall forwarding src='$LANZ' dest='$_zone'"
+            fi
+        fi
+    else
+        add FAIL firewall "$_if: not in any firewall zone (fw4 will REJECT LAN->tunnel)" "add '$_if' to a firewall zone with masq=1"
+    fi
+    EP_JSON="$EP_JSON{\"iface\":\"$(json_esc "$_if")\",\"priority\":\"$(json_esc "$(prio_of "$_if")")\",\"present\":$_present,\"handshake_age\":$_hs,\"health\":\"$_health\",\"zone\":\"$(json_esc "$_zone")\",\"masq\":$_masq,\"forwarding\":$_fwd},"
+done
+
+# ---- routing / killswitch --------------------------------------------------
+T200="$(ip -4 route show table "$WG_TABLE" 2>/dev/null)"
+has_rule "$ANTI_LOOP_PRIO:" || add FAIL routing "anti-loop ip rule (prio $ANTI_LOOP_PRIO) missing" "restart the service: /etc/init.d/wg-split restart"
+case "$PATH_KIND" in
+    vpn)
+        has_rule "$WG_RULE_PRIO:" || add FAIL routing "wg ip rule (prio $WG_RULE_PRIO) missing while active path is VPN" "restart the service: /etc/init.d/wg-split restart"
+        case "$T200" in
+            *blackhole*) add FAIL routing "route table $WG_TABLE is blackholed but state says VPN ($STATE)" "run wg-split-failover (one pass) or restart the service" ;;
+            *"dev $ACTIVE"*) : ;;
+            "") add FAIL routing "route table $WG_TABLE empty while active path is VPN" "run wg-split-failover" ;;
+            *) add WARN routing "route table $WG_TABLE default does not point at active iface '$ACTIVE'" "run wg-split-failover" ;;
+        esac ;;
+    killswitch)
+        # the blackhole only catches marked LAN traffic if the wg fwmark rule still
+        # routes it into table 200; without the rule, marked traffic falls through
+        # to main and leaks to WAN despite the blackhole.
+        has_rule "$WG_RULE_PRIO:" || add FAIL routing "killswitch path active but wg ip rule (prio $WG_RULE_PRIO) missing — marked traffic bypasses the blackhole to WAN" "restart the service: /etc/init.d/wg-split restart"
+        case "$T200" in *blackhole*) : ;; *) add FAIL routing "killswitch path active but table $WG_TABLE is not blackholed (traffic may leak)" "run wg-split-failover" ;; esac ;;
+    wan|zapret)
+        if [ "$KILLSWITCH" = "1" ]; then
+            add FAIL routing "killswitch is ON but active path is '$STATE' (policy traffic on WAN instead of blackholed)" "check why no tunnel is healthy; failover should blackhole under killswitch"
+        fi
+        [ -n "$T200" ] && add WARN routing "active path is WAN/zapret but table $WG_TABLE still holds routes" "stale; clears on next failover tick" ;;
+esac
+
+# ---- lists -----------------------------------------------------------------
+list_row() {  # NAME ENABLED COUNT MIN FILE COUNTOK
+    LIST_JSON="$LIST_JSON{\"name\":\"$1\",\"enabled\":$2,\"count\":$3,\"min\":$4,\"file\":\"$(json_esc "$5")\",\"age\":$6,\"ok\":$7},"
+}
+# ipsum (VPN set) — failover self-heals it from IPSUM_NFT_FILE. Only blocklist mode
+# wires @IPSUM_SET into routing (see wg-split-apply); in full/split the set is
+# defined but unreferenced, so an empty/stale ipsum doesn't break routing — don't
+# raise FIXABLE/WARN there (it would falsely show the whole box as degraded).
+_age=-1; [ -s "$IPSUM_FILE" ] && _age="$(file_age "$IPSUM_FILE")"
+if [ "$IPSUM_ENABLED" = 1 ]; then
+    _c="$(set_count "$IPSUM_TABLE" "$IPSUM_SET")"; _ok=true
+    if [ "$MODE" = blocklist ]; then
+        [ "${_c:-0}" -ge "$IPSUM_MIN_COUNT" ] || { _ok=false; add FIXABLE lists "ipsum set has $_c entries (<$IPSUM_MIN_COUNT)" "wg-split-update-ipsum, or it reloads on the next failover tick"; }
+        [ -s "$IPSUM_FILE" ] || add WARN lists "ipsum list file not yet downloaded ($IPSUM_FILE)" "wg-split-update-ipsum"
+        [ "$_age" -gt "$STALE_AGE" ] 2>/dev/null && add WARN lists "ipsum list is stale ($((_age/86400))d old)" "wg-split-update-ipsum"
+    fi
+    list_row ipsum true "${_c:-0}" "$IPSUM_MIN_COUNT" "$IPSUM_FILE" "$_age" "$_ok"
+else list_row ipsum false 0 "$IPSUM_MIN_COUNT" "$IPSUM_FILE" -1 true; fi
+# ru/cn (direct list; live nft set only exists in full mode)
+_age=-1; [ -s "$RU_FILE" ] && _age="$(file_age "$RU_FILE")"
+if [ "$RU_ENABLED" = 1 ]; then
+    _c="$(set_count "$RU_TABLE" "$RU_SET")"; _ok=true
+    if [ "$MODE" = full ]; then
+        [ "${_c:-0}" -ge "$RU_MIN_COUNT" ] || { _ok=false; add FIXABLE lists "ru/cn set has $_c entries (<$RU_MIN_COUNT)" "wg-split-update-ru, or it reloads on the next failover tick"; }
+    fi
+    [ -s "$RU_FILE" ] || add WARN lists "ru/cn list file not yet downloaded ($RU_FILE)" "wg-split-update-ru"
+    [ "$_age" -gt "$STALE_AGE" ] 2>/dev/null && add WARN lists "ru/cn list is stale ($((_age/86400))d old)" "wg-split-update-ru"
+    list_row ru true "${_c:-0}" "$RU_MIN_COUNT" "$RU_FILE" "$_age" "$_ok"
+else list_row ru false 0 "$RU_MIN_COUNT" "$RU_FILE" -1 true; fi
+
+# ---- zapret + nozapret -----------------------------------------------------
+if [ "$ZAPRET_ENABLED" = 1 ]; then
+    if zapret_available; then
+        if zapret_running; then
+            _c="$(set_count "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET")"; _ok=true
+            [ "${_c:-0}" -ge "$ZAPRET_NOZAPRET_MIN" ] || { _ok=false; add FIXABLE zapret "nozapret bypass set has $_c entries (<$ZAPRET_NOZAPRET_MIN)" "wg-split-failover rebuilds it; or check the ru/cn list"; }
+            list_row nozapret true "${_c:-0}" "$ZAPRET_NOZAPRET_MIN" "" -1 "$_ok"
+        else
+            add FIXABLE zapret "zapret is installed but not running" "the failover loop starts it; or: $ZAPRET_INIT start"
+            list_row nozapret true 0 "$ZAPRET_NOZAPRET_MIN" "" -1 false
+        fi
+    else
+        add WARN zapret "zapret is enabled in wg-split but not installed (auto-skipped)" "install zapret, or disable it in Services -> wg-split"
+        list_row nozapret false 0 "$ZAPRET_NOZAPRET_MIN" "" -1 true
+    fi
+fi
+
+# ---- dnsmasq domain tagging ------------------------------------------------
+# A configured download URL counts as "domains expected" even before the first
+# fetch lands a file — otherwise a URL-only setup whose list hasn't downloaded yet
+# would silently report no domain tagging at all.
+[ -n "$VPN_DOMAINS_URL" ]    && [ ! -s "$DOMAINS_VPN_FILE" ]    && add FIXABLE dnsmasq "VPN domains URL set but the list is not downloaded yet ($DOMAINS_VPN_FILE)" "wg-split-update-domains"
+[ -n "$IGNORE_DOMAINS_URL" ] && [ ! -s "$DOMAINS_IGNORE_FILE" ] && add FIXABLE dnsmasq "ignore/direct domains URL set but the list is not downloaded yet ($DOMAINS_IGNORE_FILE)" "wg-split-update-domains"
+_have_domains=false
+{ [ -n "$VPN_DOMAINS$DIRECT_DOMAINS$VPN_DOMAINS_URL$IGNORE_DOMAINS_URL" ] || [ -s "$DOMAINS_VPN_FILE" ] || [ -s "$DOMAINS_IGNORE_FILE" ]; } && _have_domains=true
+if [ "$_have_domains" = true ]; then
+    _dir="$(sed -n 's/^conf-dir=//p' /var/etc/dnsmasq.conf* 2>/dev/null | head -1)"
+    [ -n "$_dir" ] || _dir="$(dirname "$DNSMASQ_NFTSET_FILE")"
+    [ -s "$_dir/$(basename "$DNSMASQ_NFTSET_FILE")" ] \
+        || add FIXABLE dnsmasq "domain tagging configured but the dnsmasq nftset drop-in is missing from $_dir" "run wg-split-apply (regenerates and reloads dnsmasq)"
+fi
+
+# ---- output ----------------------------------------------------------------
+SEV_NAME() { case "$1" in 0) echo OK;; 1) echo WARN;; 2) echo FIXABLE;; 3) echo FAIL;; esac; }
+OVERALL="$(SEV_NAME "$WORST")"
+
+if [ "$JSON" = 1 ]; then
+    printf '{"overall":"%s",' "$OVERALL"
+    printf '"summary":{"mode":"%s","state":"%s","active_iface":"%s","killswitch":%s,"fail_count":%s,"lan_iface":"%s","lan_cidr":"%s"},' \
+        "$(json_esc "$MODE")" "$(json_esc "$STATE")" "$(json_esc "$ACTIVE")" "${KILLSWITCH:-0}" "$(fail_get)" "$(json_esc "$LAN_IFACE")" "$(json_esc "$LAN_CIDR")"
+    printf '"endpoints":[%s],' "${EP_JSON%,}"
+    printf '"lists":[%s],' "${LIST_JSON%,}"
+    printf '"checks":['
+    _first=1
+    printf '%s' "$CHECKS" | while IFS='	' read -r _s _cat _m _fix; do
+        [ -n "$_s" ] || continue
+        [ "$_first" = 1 ] && _first=0 || printf ','
+        printf '{"severity":"%s","category":"%s","message":"%s","fix":"%s"}' \
+            "$_s" "$(json_esc "$_cat")" "$(json_esc "$_m")" "$(json_esc "$_fix")"
+    done
+    printf ']}\n'
+else
+    echo "=== wg-split doctor ==="
+    echo "overall : $OVERALL"
+    echo "mode    : $MODE     state: ${STATE:-(none)}     active: ${ACTIVE:-(none)}"
+    echo "killswitch: ${KILLSWITCH:-0}     fail_count: $(fail_get)     lan: $LAN_IFACE -> ${LAN_CIDR:-(none)}"
+    echo
+    printf '%s' "$CHECKS" | while IFS='	' read -r _s _cat _m _fix; do
+        [ -n "$_s" ] || continue
+        printf '[%-7s] %-8s %s\n' "$_s" "$_cat" "$_m"
+        [ -n "$_fix" ] && printf '              -> fix: %s\n' "$_fix"
+    done
+    [ -z "$CHECKS" ] && echo "(no checks produced)"
+    echo
+    echo "exit: $WORST  (0 OK, 1 WARN, 2 FIXABLE, 3 FAIL)"
+fi
+exit "$WORST"

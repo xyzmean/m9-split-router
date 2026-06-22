@@ -22,31 +22,7 @@
 . /usr/local/lib/wg-split/common.sh
 
 # ---- health probing --------------------------------------------------------
-iface_present() { ip link show dev "$1" >/dev/null 2>&1; }
-
-# Health-probe an iface end-to-end. Because endpoints run route_allowed_ips=0,
-# they have no main-table route to public targets, and a locally-generated ping
-# is not policy-routed through table 200 — so `ping -I iface` alone would find no
-# route. Install an ISOLATED probe route (default via the iface in PROBE_TABLE,
-# selected by the iface's own source IP) for the duration of the ping. This works
-# for the active iface and parallel candidates alike, and touches neither the main
-# table, table 200, nor the DoH pins.
-health_ping() {
-    _hpif="$1"; _hpsrc="$(iface_src_ip "$_hpif")"
-    [ -n "$_hpsrc" ] || return 1
-    ip -4 rule del from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
-    ip -4 route replace default dev "$_hpif" table "$PROBE_TABLE" 2>/dev/null || true
-    ip -4 rule add from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
-    _hpok=1
-    for _t in $HEALTH_TARGETS; do
-        if ping -c "$HEALTH_PING_COUNT" -W "$HEALTH_PING_TIMEOUT" -I "$_hpif" -q "$_t" >/dev/null 2>&1; then
-            _hpok=0; break
-        fi
-    done
-    ip -4 rule del from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
-    ip -4 route flush table "$PROBE_TABLE" 2>/dev/null || true
-    return "$_hpok"
-}
+# iface_present / zapret_running / zapret_available / health_ping live in common.sh.
 
 # WAN reachability (default route / no iface bind) — for zapret vs wan rung.
 wan_healthy() {
@@ -83,14 +59,6 @@ bring_up() {        # ifup a candidate in parallel (no list/route changes yet)
 }
 
 # ---- zapret -----------------------------------------------------------------
-zapret_running()   { (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[n]fqws'; }
-zapret_available() {
-    [ -x "$ZAPRET_INIT" ] && return 0
-    [ -x /opt/zapret/nfq/nfqws ] && return 0
-    command -v nfqws >/dev/null 2>&1 && return 0
-    zapret_running && return 0
-    return 1
-}
 ensure_zapret_running() {
     [ "$ZAPRET_ENABLED" = "1" ] || return 0
     [ -x "$ZAPRET_INIT" ] || return 0

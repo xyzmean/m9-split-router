@@ -4,36 +4,171 @@
 'require network';
 'require fs';
 'require ui';
-'require poll';
+
+// Severity -> CSS color (matches wg-split-doctor's OK/WARN/FIXABLE/FAIL).
+var SEV = {
+	OK:      '#3c763d',
+	WARN:    '#8a6d3b',
+	FIXABLE: '#a0522d',
+	FAIL:    '#a94442'
+};
+
+function badge(sev) {
+	return E('span', {
+		'style': 'display:inline-block;padding:.1em .5em;border-radius:.25em;color:#fff;' +
+		         'font-weight:bold;background:' + (SEV[sev] || '#777')
+	}, sev);
+}
+
+function yn(v) {
+	return E('span', { 'style': 'color:' + (v ? SEV.OK : SEV.FAIL) }, v ? _('yes') : _('no'));
+}
+
+function fmtAge(s) {
+	if (s == null || s < 0) return '—';
+	if (s < 120) return s + 's';
+	if (s < 7200) return Math.round(s / 60) + 'm';
+	return Math.round(s / 3600) + 'h';
+}
 
 function statusPanel() {
-	var pre = E('pre', { 'style': 'white-space:pre-wrap;margin:0' }, _('Loading…'));
+	var body = E('div', {}, E('em', _('Loading diagnostics…')));
+
+	function render(d) {
+		var s = d.summary || {};
+		var path = (s.state || _('unknown'));
+
+		var summary = E('table', { 'class': 'table' }, [
+			E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td', 'width': '25%' }, E('strong', _('Overall'))),
+				E('td', { 'class': 'td' }, badge(d.overall || 'FAIL'))
+			]),
+			E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td' }, E('strong', _('Active path'))),
+				E('td', { 'class': 'td' }, path)
+			]),
+			E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td' }, E('strong', _('Mode'))),
+				E('td', { 'class': 'td' }, (s.mode || '?') +
+					' · ' + _('killswitch') + ' ' + (String(s.killswitch) === '1' ? _('on') : _('off')) +
+					' · ' + _('failures') + ' ' + (s.fail_count != null ? s.fail_count : '?'))
+			]),
+			E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td' }, E('strong', _('LAN'))),
+				E('td', { 'class': 'td' }, (s.lan_iface || '?') + ' → ' + (s.lan_cidr || _('(none detected)')))
+			])
+		]);
+
+		// endpoints
+		var epRows = [ E('tr', { 'class': 'tr table-titles' }, [
+			E('th', { 'class': 'th' }, _('Tunnel')), E('th', { 'class': 'th' }, _('Prio')),
+			E('th', { 'class': 'th' }, _('Handshake')), E('th', { 'class': 'th' }, _('Health')),
+			E('th', { 'class': 'th' }, _('Zone')), E('th', { 'class': 'th' }, _('Masq')),
+			E('th', { 'class': 'th' }, _('LAN fwd'))
+		]) ];
+		(d.endpoints || []).forEach(function (e) {
+			epRows.push(E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td' }, e.present ? e.iface : E('span', { 'style': 'color:' + SEV.FAIL }, e.iface + ' ' + _('(missing)'))),
+				E('td', { 'class': 'td' }, e.priority || '—'),
+				E('td', { 'class': 'td' }, e.present ? fmtAge(e.handshake_age) : '—'),
+				E('td', { 'class': 'td' }, e.health === 'OK' ? E('span', { 'style': 'color:' + SEV.OK }, 'OK') :
+					(e.health === 'FAIL' ? E('span', { 'style': 'color:' + SEV.FAIL }, 'FAIL') : '—')),
+				E('td', { 'class': 'td' }, e.zone || E('span', { 'style': 'color:' + SEV.FAIL }, _('none'))),
+				E('td', { 'class': 'td' }, yn(e.masq)),
+				E('td', { 'class': 'td' }, yn(e.forwarding))
+			]));
+		});
+
+		// lists
+		var listRows = [ E('tr', { 'class': 'tr table-titles' }, [
+			E('th', { 'class': 'th' }, _('List')), E('th', { 'class': 'th' }, _('Entries')),
+			E('th', { 'class': 'th' }, _('Min')), E('th', { 'class': 'th' }, _('Age')),
+			E('th', { 'class': 'th' }, _('State'))
+		]) ];
+		(d.lists || []).forEach(function (l) {
+			listRows.push(E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td' }, l.name),
+				E('td', { 'class': 'td' }, l.enabled ? l.count : _('(disabled)')),
+				E('td', { 'class': 'td' }, l.min),
+				E('td', { 'class': 'td' }, fmtAge(l.age)),
+				E('td', { 'class': 'td' }, l.enabled ? yn(l.ok) : '—')
+			]));
+		});
+
+		// checks that need attention (hide the OK noise; doctor only emits problems anyway)
+		var checks = (d.checks || []).filter(function (c) { return c.severity !== 'OK'; });
+		var checkNodes;
+		if (!checks.length) {
+			checkNodes = E('p', { 'style': 'color:' + SEV.OK }, '✓ ' + _('No problems detected.'));
+		} else {
+			checkNodes = E('div', {}, checks.map(function (c) {
+				return E('div', { 'style': 'margin:.4em 0;padding:.4em .6em;border-left:3px solid ' + (SEV[c.severity] || '#777') }, [
+					badge(c.severity), ' ', E('span', {}, c.message),
+					c.fix ? E('div', { 'style': 'color:#666;font-size:90%;margin-top:.2em' }, '→ ' + c.fix) : ''
+				]);
+			}));
+		}
+
+		body.replaceChildren(
+			E('h4', _('State')), summary,
+			E('h4', _('Failover tunnels')), E('table', { 'class': 'table' }, epRows),
+			E('h4', _('Lists')), E('table', { 'class': 'table' }, listRows),
+			E('h4', _('Diagnostics')), checkNodes
+		);
+	}
 
 	function refresh() {
-		return fs.exec('/usr/local/sbin/wg-split-status').then(function (res) {
-			pre.textContent = ((res.stdout || res.stderr || '').trim()) || _('(no output)');
+		return fs.exec('/usr/local/sbin/wg-split-doctor', [ '--json' ]).then(function (res) {
+			try {
+				render(JSON.parse(res.stdout || '{}'));
+			} catch (e) {
+				body.replaceChildren(E('pre', { 'style': 'white-space:pre-wrap' },
+					_('Could not parse diagnostics:') + '\n' + ((res.stdout || res.stderr || String(e)))));
+			}
 		}).catch(function (e) {
-			pre.textContent = _('status failed: ') + e;
+			body.replaceChildren(E('em', { 'style': 'color:' + SEV.FAIL }, _('Diagnostics failed: ') + e));
 		});
 	}
 
-	poll.add(refresh, 5);
+	// One action button that runs a command, toasts, then re-runs diagnostics.
+	function actionBtn(label, cls, path, args, confirmMsg, toast) {
+		return E('button', {
+			'class': 'btn cbi-button ' + cls,
+			'click': ui.createHandlerFn(this, function () {
+				if (confirmMsg && !confirm(confirmMsg)) return;
+				return fs.exec(path, args || []).then(function (res) {
+					ui.addNotification(null, E('p', toast || label), (res.code === 0 ? 'info' : 'warning'));
+					return refresh();
+				}).catch(function (e) {
+					ui.addNotification(null, E('p', label + ': ' + e), 'error');
+				});
+			})
+		}, label);
+	}
+
+	var diagBtn = E('button', {
+		'class': 'btn cbi-button cbi-button-action',
+		'click': ui.createHandlerFn(this, function () { return refresh(); })
+	}, _('Run diagnostics'));
+
+	var actions = E('div', { 'style': 'margin:.5em 0;display:flex;flex-wrap:wrap;gap:.4em' }, [
+		diagBtn,
+		actionBtn(_('Apply'), 'cbi-button-apply', '/usr/local/sbin/wg-split-apply', [], null, _('Configuration applied')),
+		actionBtn(_('Restart service'), 'cbi-button-reset', '/etc/init.d/wg-split', [ 'restart' ], null, _('Service restarted')),
+		actionBtn(_('Refresh ipsum'), 'cbi-button-neutral', '/usr/local/sbin/wg-split-update-ipsum', [], null, _('ipsum refreshed')),
+		actionBtn(_('Refresh ru/cn'), 'cbi-button-neutral', '/usr/local/sbin/wg-split-update-ru', [], null, _('ru/cn refreshed')),
+		actionBtn(_('Refresh domains'), 'cbi-button-neutral', '/usr/local/sbin/wg-split-update-domains', [], null, _('domains refreshed')),
+		actionBtn(_('Emergency disable'), 'cbi-button-remove', '/usr/local/sbin/wg-split-disable', [],
+			_('Disable split routing now? All LAN traffic will exit via WAN until the service re-enables it (or you stop it).'),
+			_('Split routing disabled'))
+	]);
+
 	refresh();
 
-	var restartBtn = E('button', {
-		'class': 'btn cbi-button cbi-button-action',
-		'click': ui.createHandlerFn(this, function () {
-			return fs.exec('/etc/init.d/wg-split', ['restart']).then(function () {
-				ui.addNotification(null, E('p', _('wg-split restarted')), 'info');
-				return refresh();
-			});
-		})
-	}, _('Restart service'));
-
 	return E('div', { 'class': 'cbi-section' }, [
-		E('h3', _('Service status')),
-		E('div', { 'style': 'margin-bottom:.5em' }, [ restartBtn ]),
-		pre
+		E('h3', _('Status & diagnostics')),
+		actions,
+		body
 	]);
 }
 
