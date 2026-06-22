@@ -93,7 +93,7 @@ for _if in $(endpoints_by_priority); do
     EP_IPS="$EP_IPS $(wgshow "$_if" endpoints 2>/dev/null \
         | awk '{print $2}' | sed 's/:[0-9]*$//' | grep -E '^[0-9]+\.')"
 done
-ep_braces="$(echo "$EP_IPS" | tr ' ' '\n' | grep -E '^[0-9]' | sort -u | paste -sd, -)"
+ep_braces="$(echo "$EP_IPS" | tr ' ' '\n' | grep -E '^[0-9]' | sort -u | tr '\n' ',' | sed 's/,$//')"
 
 # Also true when only a downloaded domain list is configured — otherwise the
 # VPN/direct sets (and the policy/direct chains) wouldn't be emitted, yet the

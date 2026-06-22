@@ -6,6 +6,7 @@
 
 echo "=== wg-split status ==="
 echo "MODE          : $MODE"
+echo "LAN           : $LAN_IFACE -> ${LAN_CIDR:-(none detected)}"
 echo "STATE         : $(read_state)"
 echo "ACTIVE_IFACE  : $(active_iface)"
 echo "ENDPOINTS     : $(endpoints_by_priority)"

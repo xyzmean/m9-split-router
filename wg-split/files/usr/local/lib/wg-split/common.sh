@@ -19,6 +19,20 @@ config_get        INTERVAL        global interval        180
 config_get_bool   KILLSWITCH      global killswitch      0
 config_get        LAN_IFACE       global lan_iface       br-lan
 config_get        LAN_CIDR        global lan_cidr        ''
+
+# Auto-detect the LAN subnet(s) from lan_iface's connected (proto kernel) routes,
+# so policy marking always follows the real bridge. A stale or blank lan_cidr was
+# the #1 "nothing gets routed" gotcha: after renumbering the LAN the saddr-matched
+# chains kept matching the old subnet and no client traffic was ever marked. Any
+# configured lan_cidr is still unioned in, so it can add extra subnets (e.g. VLANs
+# not on lan_iface). Result is a comma-joined, nft-ready list (possibly empty if
+# the bridge has no IPv4 yet — callers already treat empty as "sets only").
+LAN_CIDR="$(
+    { ip -4 route show dev "$LAN_IFACE" proto kernel scope link 2>/dev/null \
+        | awk '{print $1}'
+      printf '%s\n' "$LAN_CIDR" | tr ', ' '\n'
+    } | grep -Ex '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' | sort -u | tr '\n' ',' | sed 's/,$//'
+)"
 config_get        HEALTH_TARGETS  global health_target   '1.1.1.1 8.8.8.8'
 config_get        HEALTH_CURL_URL global health_url       'https://1.1.1.1/cdn-cgi/trace'
 config_get_bool   ZAPRET_ENABLED  global zapret_enabled  1
