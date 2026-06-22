@@ -173,24 +173,39 @@ fail_get()   { cat "$FAIL_COUNTER_FILE" 2>/dev/null || echo 0; }
 # (NOT OpenWrt's config_load, which would clobber the wg-split config context
 # that config_foreach endpoint/device callers rely on).
 
-# Echo the firewall zone name whose `network` list contains logical iface $1;
-# return non-zero (empty) if no zone covers it.
+# A firewall section with `option enabled '0'` is skipped by fw4 — so we must
+# skip it too, or the diagnostics would disagree with the live ruleset.
+fw_sec_enabled() { [ "$(uci -q get "firewall.$1.enabled" 2>/dev/null)" != "0" ]; }
+
+# Echo the firewall zone name covering logical iface $1; non-zero if none. Mirrors
+# fw4: a zone matches via its `network` OR `device` list (also resolving the
+# network's own L3 device), and a disabled zone is ignored. (Glob device patterns
+# like `tun+` aren't expanded — at worst that's a spurious warning, never a wrong
+# route, since wg-split only warns here.)
 fw_zone_of_net() {
+    _want="$1"
+    _wantdev="$(uci -q get "network.$1.device" 2>/dev/null)"   # network's L3 device, if any
     _fz=0
     while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
-        for _fznet in $(uci -q get "firewall.@zone[$_fz].network" 2>/dev/null); do
-            [ "$_fznet" = "$1" ] && { uci -q get "firewall.@zone[$_fz].name"; return 0; }
-        done
+        if fw_sec_enabled "@zone[$_fz]"; then
+            for _m in $(uci -q get "firewall.@zone[$_fz].network" 2>/dev/null) \
+                      $(uci -q get "firewall.@zone[$_fz].device"  2>/dev/null); do
+                if [ "$_m" = "$_want" ] || { [ -n "$_wantdev" ] && [ "$_m" = "$_wantdev" ]; }; then
+                    uci -q get "firewall.@zone[$_fz].name"; return 0
+                fi
+            done
+        fi
         _fz=$((_fz + 1))
     done
     return 1
 }
 
-# Is masquerading (masq=1) enabled on the zone named $1?
+# Is masquerading (masq=1) enabled on the (enabled) zone named $1?
 fw_zone_has_masq() {
     _fz=0
     while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
-        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ]; then
+        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ] \
+           && fw_sec_enabled "@zone[$_fz]"; then
             [ "$(uci -q get "firewall.@zone[$_fz].masq" 2>/dev/null)" = "1" ]
             return
         fi
@@ -199,27 +214,31 @@ fw_zone_has_masq() {
     return 1
 }
 
-# Is there a firewall forwarding rule src zone $1 -> dest zone $2?
+# Is there an ENABLED firewall forwarding rule src zone $1 -> dest zone $2?
 fw_has_forwarding() {
     _ff=0
     while [ -n "$(uci -q get "firewall.@forwarding[$_ff]" 2>/dev/null)" ]; do
-        [ "$(uci -q get "firewall.@forwarding[$_ff].src"  2>/dev/null)" = "$1" ] && \
-        [ "$(uci -q get "firewall.@forwarding[$_ff].dest" 2>/dev/null)" = "$2" ] && return 0
+        if fw_sec_enabled "@forwarding[$_ff]" \
+           && [ "$(uci -q get "firewall.@forwarding[$_ff].src"  2>/dev/null)" = "$1" ] \
+           && [ "$(uci -q get "firewall.@forwarding[$_ff].dest" 2>/dev/null)" = "$2" ]; then
+            return 0
+        fi
         _ff=$((_ff + 1))
     done
     return 1
 }
 
 # Firewall zone carrying the LAN — the src side of the lan->tunnel forwarding.
-# Maps $LAN_IFACE (a device, e.g. br-lan) -> its network -> the zone listing that
-# network, with a fall back to a network literally named 'lan'. Empty if it can't
-# be resolved (the caller then skips the forwarding check to avoid false warnings).
+# Tries $LAN_IFACE's network(s), then $LAN_IFACE bound directly (by device), then
+# the conventional 'lan'. Empty if it can't be resolved (the caller then skips the
+# forwarding check to avoid false warnings).
 fw_lan_zone() {
     for _ln in $(uci show network 2>/dev/null \
             | sed -n "s/^network\.\([^.]*\)\.device='\{0,1\}${LAN_IFACE}'\{0,1\}\$/\1/p"); do
         _lz="$(fw_zone_of_net "$_ln")" && { echo "$_lz"; return 0; }
     done
-    _lz="$(fw_zone_of_net lan)" && { echo "$_lz"; return 0; }
+    _lz="$(fw_zone_of_net "$LAN_IFACE")" && { echo "$_lz"; return 0; }
+    _lz="$(fw_zone_of_net lan)"          && { echo "$_lz"; return 0; }
     return 1
 }
 
