@@ -165,6 +165,52 @@ fail_inc() {
 fail_reset() { echo 0 > "$FAIL_COUNTER_FILE"; }
 fail_get()   { cat "$FAIL_COUNTER_FILE" 2>/dev/null || echo 0; }
 
+# ---- firewall sanity (query helpers) ---------------------------------------
+# wg-split owns ROUTING (marks + table 200) but never touches the firewall — a
+# tunnel iface still needs a firewall zone (masq on) and lan->that-zone
+# forwarding, or fw4 REJECTs the forwarded LAN->tunnel packets and the tunnel
+# looks dead though it's up. These read the firewall config with `uci` directly
+# (NOT OpenWrt's config_load, which would clobber the wg-split config context
+# that config_foreach endpoint/device callers rely on).
+
+# Echo the firewall zone name whose `network` list contains logical iface $1;
+# return non-zero (empty) if no zone covers it.
+fw_zone_of_net() {
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        for _fznet in $(uci -q get "firewall.@zone[$_fz].network" 2>/dev/null); do
+            [ "$_fznet" = "$1" ] && { uci -q get "firewall.@zone[$_fz].name"; return 0; }
+        done
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
+# Is masquerading (masq=1) enabled on the zone named $1?
+fw_zone_has_masq() {
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ]; then
+            [ "$(uci -q get "firewall.@zone[$_fz].masq" 2>/dev/null)" = "1" ]
+            return
+        fi
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
+# ---- list-updater mutex ----------------------------------------------------
+# The daily cron AND the Save&Apply / daemon self-heal both fire the list
+# updaters, so two copies can run at once; the loser's redundant download then
+# fails curl and spams ERROR into the log. Serialize on a flock so a concurrent
+# run exits cleanly instead. Degrades to a plain run if flock isn't installed.
+# Call as `single_run <tag>` near the top of an updater (uses fd 9).
+single_run() {
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9>"/tmp/wg-split-$1.lock" || return 0
+    flock -n 9 || { log "$1: another run in progress — skipping"; exit 0; }
+}
+
 # `wg show` for either tool — AmneziaWG ifaces answer to `awg`, plain WG to `wg`.
 # The wrong tool errors with no output, so concatenating is safe.
 wgshow() { awg show "$@" 2>/dev/null; wg show "$@" 2>/dev/null; }
