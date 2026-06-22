@@ -63,13 +63,13 @@ for _if in $ORDERED; do
     _present=false; _hs=-1; _health=skip; _zone=""; _masq=false; _fwd=false
     if iface_present "$_if"; then
         _present=true
-        if health_ping "$_if" "$PROBE_TABLE_DIAG" "$PROBE_PRIO_DIAG"; then _health=OK; else _health=FAIL; add FAIL endpoint "$_if: health probe failed (no reply through the tunnel)" "check the peer endpoint/keys, or let failover pick another tunnel"; fi
-        # Sample the handshake AFTER the probe: health_ping's first packet wakes an
-        # idle keepalive-less peer and triggers a fresh handshake. Only flag a stale
-        # handshake when the probe also failed — a healthy idle tunnel legitimately
-        # has an old handshake and must not drag the overall status to WARN.
+        # PASSIVE health only — the doctor never probes (that mutates routing and
+        # must stay out of the read-only LuCI path). Derive from handshake age, a
+        # pure `wg show` read: fresh = ok, stale = idle (not "failed" — we didn't
+        # test it; the failover daemon is the authoritative prober). The active
+        # path in the summary already names the daemon-confirmed live tunnel.
         _hs="$(wg_handshake_age "$_if")"
-        [ "$_health" != OK ] && [ "$_hs" -gt 150 ] 2>/dev/null && add WARN endpoint "$_if: handshake stale (${_hs}s)" "tunnel idle or down — the failover loop will restart it"
+        if [ "$_hs" -lt 180 ] 2>/dev/null; then _health=ok; else _health=idle; fi
     elif [ -n "$(uci -q get "network.$_if" 2>/dev/null)" ]; then
         # configured in /etc/config/network but the kernel link is gone (stopped /
         # auto 0) — recoverable; failover brings candidates up with ifup.
@@ -99,23 +99,28 @@ for _if in $ORDERED; do
 done
 
 # ---- routing / killswitch --------------------------------------------------
+# Match the EXACT rules common_rules installs (priority + fwmark + lookup target),
+# not just "a rule at prio 999/1000" — a stale/foreign rule at the same priority
+# must not read as healthy. And inspect the table-200 DEFAULT route specifically
+# (not any route that merely mentions the active iface).
 T200="$(ip -4 route show table "$WG_TABLE" 2>/dev/null)"
-has_rule "$ANTI_LOOP_PRIO:" || add FAIL routing "anti-loop ip rule (prio $ANTI_LOOP_PRIO) missing" "restart the service: /etc/init.d/wg-split restart"
+T200DEF="$(ip -4 route show table "$WG_TABLE" default 2>/dev/null)"
+has_rule "$ANTI_LOOP_PRIO:.*fwmark.*lookup main" || add FAIL routing "anti-loop ip rule (prio $ANTI_LOOP_PRIO, fwmark -> main) missing or malformed" "restart the service: /etc/init.d/wg-split restart"
 case "$PATH_KIND" in
     vpn)
-        has_rule "$WG_RULE_PRIO:" || add FAIL routing "wg ip rule (prio $WG_RULE_PRIO) missing while active path is VPN" "restart the service: /etc/init.d/wg-split restart"
-        case "$T200" in
-            *blackhole*) add FAIL routing "route table $WG_TABLE is blackholed but state says VPN ($STATE)" "run wg-split-failover (one pass) or restart the service" ;;
+        has_rule "$WG_RULE_PRIO:.*fwmark.*lookup $WG_TABLE" || add FAIL routing "wg fwmark ip rule (prio $WG_RULE_PRIO -> table $WG_TABLE) missing or malformed while active path is VPN" "restart the service: /etc/init.d/wg-split restart"
+        case "$T200DEF" in
+            *blackhole*) add FAIL routing "table $WG_TABLE default is blackholed but state says VPN ($STATE)" "run wg-split-failover (one pass) or restart the service" ;;
             *"dev $ACTIVE"*) : ;;
-            "") add FAIL routing "route table $WG_TABLE empty while active path is VPN" "run wg-split-failover" ;;
-            *) add WARN routing "route table $WG_TABLE default does not point at active iface '$ACTIVE'" "run wg-split-failover" ;;
+            "") add FAIL routing "table $WG_TABLE has no default route while active path is VPN" "run wg-split-failover" ;;
+            *) add WARN routing "table $WG_TABLE default route is not via active iface '$ACTIVE'" "run wg-split-failover" ;;
         esac ;;
     killswitch)
         # the blackhole only catches marked LAN traffic if the wg fwmark rule still
         # routes it into table 200; without the rule, marked traffic falls through
         # to main and leaks to WAN despite the blackhole.
-        has_rule "$WG_RULE_PRIO:" || add FAIL routing "killswitch path active but wg ip rule (prio $WG_RULE_PRIO) missing — marked traffic bypasses the blackhole to WAN" "restart the service: /etc/init.d/wg-split restart"
-        case "$T200" in *blackhole*) : ;; *) add FAIL routing "killswitch path active but table $WG_TABLE is not blackholed (traffic may leak)" "run wg-split-failover" ;; esac ;;
+        has_rule "$WG_RULE_PRIO:.*fwmark.*lookup $WG_TABLE" || add FAIL routing "killswitch active but wg fwmark ip rule (prio $WG_RULE_PRIO -> table $WG_TABLE) missing/malformed — marked traffic bypasses the blackhole to WAN" "restart the service: /etc/init.d/wg-split restart"
+        case "$T200DEF" in *blackhole*) : ;; *) add FAIL routing "killswitch active but table $WG_TABLE default is not a blackhole (traffic may leak)" "run wg-split-failover" ;; esac ;;
     wan|zapret)
         if [ "$KILLSWITCH" = "1" ]; then
             add FAIL routing "killswitch is ON but active path is '$STATE' (policy traffic on WAN instead of blackholed)" "check why no tunnel is healthy; failover should blackhole under killswitch"

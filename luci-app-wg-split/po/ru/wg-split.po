@@ -278,3 +278,6 @@ msgstr "VPN"
 
 msgid "Direct"
 msgstr "Direct"
+
+msgid "idle"
+msgstr "простаивает"

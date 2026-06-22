@@ -56,16 +56,6 @@ ANTI_LOOP_MARK="0x10000"; ANTI_LOOP_MASK="0x10000"; ANTI_LOOP_PRIO="1000"
 # route to public targets — the probe installs a scoped route via the candidate's
 # own source IP for the duration of the ping. Prio above the wg mark rule.
 PROBE_TABLE="201"; PROBE_PRIO="998"
-# Separate probe table+prio for wg-split-doctor so a LuCI diagnostics run can't
-# repoint/flush the failover daemon's table 201 mid-probe (which would make the
-# daemon read a healthy tunnel as failed). Distinct table AND a LOWER-precedence
-# (higher-numbered) priority than PROBE_PRIO: if two endpoints share the same
-# local src address, the daemon's prio-998 `from <src>` rule still wins the tie,
-# so the daemon's own probe is never diverted into the doctor's table. (Worst case
-# the doctor reads a slightly-off health for that iface — harmless — rather than
-# the daemon failing over a healthy tunnel.) Still well below main (32766), so a
-# locally-generated, unmarked probe ping from <src> still selects table 202.
-PROBE_TABLE_DIAG="202"; PROBE_PRIO_DIAG="1002"
 DOH_IPS="8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112"
 
 VPN_SET="wg_split_vpn_v4"
@@ -357,27 +347,27 @@ iface_present() { ip link show dev "$1" >/dev/null 2>&1; }
 # Health-probe an iface end-to-end. Because endpoints run route_allowed_ips=0,
 # they have no main-table route to public targets and a locally-generated ping is
 # not policy-routed through table 200 — so `ping -I iface` alone finds no route.
-# Install an ISOLATED probe route (default via the iface in a probe table, selected
+# Install an ISOLATED probe route (default via the iface in PROBE_TABLE, selected
 # by the iface's own source IP) for the duration of the ping, touching neither the
 # main table, table 200, nor the DoH pins. Works for the active iface and parallel
-# candidates alike. The failover daemon uses the default PROBE_TABLE/PROBE_PRIO;
-# wg-split-doctor passes PROBE_TABLE_DIAG/PROBE_PRIO_DIAG so the two never collide.
-# Usage: health_ping IFACE [TABLE] [PRIO]
+# candidates alike. Only the failover daemon calls this — it MUTATES routing
+# (adds/deletes an ip rule + replaces/flushes PROBE_TABLE), so it must never be
+# reachable from a read-only/diagnostic path. wg-split-doctor is passive and does
+# NOT probe; it reads handshake age + daemon state instead.
 health_ping() {
-    _hpif="$1"; _hptbl="${2:-$PROBE_TABLE}"; _hpprio="${3:-$PROBE_PRIO}"
-    _hpsrc="$(iface_src_ip "$_hpif")"
+    _hpif="$1"; _hpsrc="$(iface_src_ip "$_hpif")"
     [ -n "$_hpsrc" ] || return 1
-    ip -4 rule del from "$_hpsrc" table "$_hptbl" priority "$_hpprio" 2>/dev/null || true
-    ip -4 route replace default dev "$_hpif" table "$_hptbl" 2>/dev/null || true
-    ip -4 rule add from "$_hpsrc" table "$_hptbl" priority "$_hpprio" 2>/dev/null || true
+    ip -4 rule del from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
+    ip -4 route replace default dev "$_hpif" table "$PROBE_TABLE" 2>/dev/null || true
+    ip -4 rule add from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
     _hpok=1
     for _t in $HEALTH_TARGETS; do
         if ping -c "$HEALTH_PING_COUNT" -W "$HEALTH_PING_TIMEOUT" -I "$_hpif" -q "$_t" >/dev/null 2>&1; then
             _hpok=0; break
         fi
     done
-    ip -4 rule del from "$_hpsrc" table "$_hptbl" priority "$_hpprio" 2>/dev/null || true
-    ip -4 route flush table "$_hptbl" 2>/dev/null || true
+    ip -4 rule del from "$_hpsrc" table "$PROBE_TABLE" priority "$PROBE_PRIO" 2>/dev/null || true
+    ip -4 route flush table "$PROBE_TABLE" 2>/dev/null || true
     return "$_hpok"
 }
 zapret_running()   { (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[n]fqws'; }

@@ -24,6 +24,16 @@ function yn(v) {
 	return E('span', { 'style': 'color:' + (v ? SEV.OK : SEV.FAIL) }, v ? _('yes') : _('no'));
 }
 
+// Doctor is passive: per-endpoint health is handshake-derived — 'ok' (fresh) /
+// 'idle' (stale, not probed). 'OK'/'FAIL' only appear if a future active probe
+// is added. The daemon-confirmed live tunnel is shown as the Active path above.
+function healthCell(h) {
+	if (h === 'OK' || h === 'ok') return E('span', { 'style': 'color:' + SEV.OK }, h);
+	if (h === 'FAIL') return E('span', { 'style': 'color:' + SEV.FAIL }, 'FAIL');
+	if (h === 'idle') return E('span', { 'style': 'color:#888' }, _('idle'));
+	return '—';
+}
+
 function fmtAge(s) {
 	if (s == null || s < 0) return '—';
 	if (s < 120) return s + 's';
@@ -71,8 +81,7 @@ function statusPanel() {
 				E('td', { 'class': 'td' }, e.present ? e.iface : E('span', { 'style': 'color:' + SEV.FAIL }, e.iface + ' ' + _('(missing)'))),
 				E('td', { 'class': 'td' }, e.priority || '—'),
 				E('td', { 'class': 'td' }, e.present ? fmtAge(e.handshake_age) : '—'),
-				E('td', { 'class': 'td' }, e.health === 'OK' ? E('span', { 'style': 'color:' + SEV.OK }, 'OK') :
-					(e.health === 'FAIL' ? E('span', { 'style': 'color:' + SEV.FAIL }, 'FAIL') : '—')),
+				E('td', { 'class': 'td' }, healthCell(e.health)),
 				E('td', { 'class': 'td' }, e.zone || E('span', { 'style': 'color:' + SEV.FAIL }, _('none'))),
 				E('td', { 'class': 'td' }, yn(e.masq)),
 				E('td', { 'class': 'td' }, yn(e.forwarding))
