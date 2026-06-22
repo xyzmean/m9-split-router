@@ -38,7 +38,7 @@ jobs:
 
       - name: Extract built packages
         run: |
-          mkdir -p artifacts
+          mkdir -p artifacts out
           id=$(docker create wg-split:ci)
           docker cp "$id:/builder/bin/packages/." ./out/
           docker rm "$id"

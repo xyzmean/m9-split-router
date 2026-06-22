@@ -173,21 +173,40 @@ fail_get()   { cat "$FAIL_COUNTER_FILE" 2>/dev/null || echo 0; }
 # (NOT OpenWrt's config_load, which would clobber the wg-split config context
 # that config_foreach endpoint/device callers rely on).
 
-# A firewall section with `option enabled '0'` is skipped by fw4 — so we must
-# skip it too, or the diagnostics would disagree with the live ruleset.
-fw_sec_enabled() { [ "$(uci -q get "firewall.$1.enabled" 2>/dev/null)" != "0" ]; }
+# Mirror fw4's parse_bool (see OpenWrt fw4.uc): 1/on/true/yes/enabled (any case)
+# are true, everything else (0/off/false/no/disabled/unset/garbage) is false.
+fw_bool() {
+    case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
+        1|on|true|yes|enabled) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Is a firewall section one fw4 actually applies to our IPv4 LAN->tunnel path?
+# i.e. not disabled (enabled defaults ON when unset) and not ipv6-only (family
+# unset/any/both/ipv4). wg-split routes only IPv4, so an ipv6-only zone/forwarding
+# leaves IPv4 traffic rejected and must not count as covering the endpoint. $1 =
+# section selector, e.g. "@zone[2]" / "@forwarding[0]".
+fw_sec_active() {
+    _e="$(uci -q get "firewall.$1.enabled" 2>/dev/null)"
+    [ -n "$_e" ] && ! fw_bool "$_e" && return 1
+    case "$(uci -q get "firewall.$1.family" 2>/dev/null | tr 'A-Z' 'a-z')" in
+        ''|any|both|ipv4|4) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # Echo the firewall zone name covering logical iface $1; non-zero if none. Mirrors
 # fw4: a zone matches via its `network` OR `device` list (also resolving the
-# network's own L3 device), and a disabled zone is ignored. (Glob device patterns
-# like `tun+` aren't expanded — at worst that's a spurious warning, never a wrong
-# route, since wg-split only warns here.)
+# network's own L3 device); disabled / ipv6-only zones are ignored. (Glob device
+# patterns like `tun+` aren't expanded — at worst a spurious warning, never a
+# wrong route, since wg-split only warns here.)
 fw_zone_of_net() {
     _want="$1"
     _wantdev="$(uci -q get "network.$1.device" 2>/dev/null)"   # network's L3 device, if any
     _fz=0
     while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
-        if fw_sec_enabled "@zone[$_fz]"; then
+        if fw_sec_active "@zone[$_fz]"; then
             for _m in $(uci -q get "firewall.@zone[$_fz].network" 2>/dev/null) \
                       $(uci -q get "firewall.@zone[$_fz].device"  2>/dev/null); do
                 if [ "$_m" = "$_want" ] || { [ -n "$_wantdev" ] && [ "$_m" = "$_wantdev" ]; }; then
@@ -200,13 +219,13 @@ fw_zone_of_net() {
     return 1
 }
 
-# Is masquerading (masq=1) enabled on the (enabled) zone named $1?
+# Is masquerading enabled on the (active) zone named $1? masq is an fw4 bool.
 fw_zone_has_masq() {
     _fz=0
     while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
         if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ] \
-           && fw_sec_enabled "@zone[$_fz]"; then
-            [ "$(uci -q get "firewall.@zone[$_fz].masq" 2>/dev/null)" = "1" ]
+           && fw_sec_active "@zone[$_fz]"; then
+            fw_bool "$(uci -q get "firewall.@zone[$_fz].masq" 2>/dev/null)"
             return
         fi
         _fz=$((_fz + 1))
@@ -214,11 +233,11 @@ fw_zone_has_masq() {
     return 1
 }
 
-# Is there an ENABLED firewall forwarding rule src zone $1 -> dest zone $2?
+# Is there an active (enabled, IPv4) firewall forwarding src zone $1 -> dest $2?
 fw_has_forwarding() {
     _ff=0
     while [ -n "$(uci -q get "firewall.@forwarding[$_ff]" 2>/dev/null)" ]; do
-        if fw_sec_enabled "@forwarding[$_ff]" \
+        if fw_sec_active "@forwarding[$_ff]" \
            && [ "$(uci -q get "firewall.@forwarding[$_ff].src"  2>/dev/null)" = "$1" ] \
            && [ "$(uci -q get "firewall.@forwarding[$_ff].dest" 2>/dev/null)" = "$2" ]; then
             return 0
