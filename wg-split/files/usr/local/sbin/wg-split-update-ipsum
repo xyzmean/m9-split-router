@@ -17,52 +17,27 @@ set -e   # fail-fast on curl/validation; no `-u`, /lib/functions.sh isn't nounse
 [ -n "$IPSUM_URL" ] || die "no ipsum_url configured"
 single_run update-ipsum   # bail if a concurrent run (cron vs self-heal) holds the lock
 
-BACKUP_DIR="${BACKUP_DIR:-/root/wg-split-backup-ipsum}"
 TMP="/tmp/wg-split-update-ipsum.$$"
-mkdir -p "$TMP" "$(dirname "$IPSUM_FILE")" "$(dirname "$IPSUM_NFT_FILE")" "$BACKUP_DIR"
+mkdir -p "$TMP" "$(dirname "$IPSUM_FILE")" "$(dirname "$IPSUM_NFT_FILE")"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 \
     -o "$TMP/raw.lst" "$IPSUM_URL" || die "curl failed: $IPSUM_URL"
 
-awk '
-    function vnum(x, lo, hi) { return x ~ /^[0-9]+$/ && x >= lo && x <= hi }
-    function valid(line, a, n) {
-        n = split(line, a, "[./]")
-        return n == 5 \
-            && vnum(a[1],0,255) && vnum(a[2],0,255) \
-            && vnum(a[3],0,255) && vnum(a[4],0,255) \
-            && vnum(a[5],0,32)
-    }
-    {
-        l = $0
-        sub(/\r$/, "", l)
-        sub(/[ \t]*#.*/, "", l)
-        gsub(/[ \t]/, "", l)
-        if (l == "" || !valid(l) || seen[l]++) next
-        print l
-    }
-' "$TMP/raw.lst" > "$TMP/clean.lst"
+clean_ip_list < "$TMP/raw.lst" > "$TMP/clean.lst"
 
 count=$(wc -l < "$TMP/clean.lst")
 [ "$count" -ge "$IPSUM_MIN_COUNT" ] || die "only $count valid prefixes (need $IPSUM_MIN_COUNT)"
 
-# Build the command stream (no table wrap, no set definition — just flush + add).
-{
-    printf 'flush set %s %s\n' "$IPSUM_TABLE" "$IPSUM_SET"
-    printf 'add element %s %s {\n' "$IPSUM_TABLE" "$IPSUM_SET"
-    awk 'NR > 1 { printf "," } { printf "%s", $0 } END { print "" }' "$TMP/clean.lst"
-    printf '}\n'
-} > "$TMP/live.nft"
+# Command stream: flush + one comma-block add (no table wrap, no set definition).
+emit_nft_set_block "$IPSUM_TABLE" "$IPSUM_SET" < "$TMP/clean.lst" > "$TMP/live.nft"
 
 # Atomic live reload.
 nft -f "$TMP/live.nft" || die "atomic nft live update failed (kept: $TMP/live.nft)"
 
-# Persist (rotate 7 backups, then replace).
-[ -s "$IPSUM_NFT_FILE" ] \
-    && cp -a "$IPSUM_NFT_FILE" "$BACKUP_DIR/$(basename "$IPSUM_NFT_FILE").$(date +%Y%m%d-%H%M%S)"
-ls -t "$BACKUP_DIR"/$(basename "$IPSUM_NFT_FILE").* 2>/dev/null \
-    | awk 'NR > 7' | while IFS= read -r f; do rm -f "$f"; done
+# Persist. IPSUM_NFT_FILE is itself the replay source (failover reloads it after a
+# fw4 flush); the list is re-downloaded daily and gated by IPSUM_MIN_COUNT above,
+# so no separate timestamped backups are kept.
 cat "$TMP/live.nft" > "$IPSUM_NFT_FILE"
 cat "$TMP/clean.lst" > "$IPSUM_FILE"
 

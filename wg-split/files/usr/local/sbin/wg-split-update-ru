@@ -12,32 +12,14 @@ set -e   # fail-fast on curl/validation; no `-u`, /lib/functions.sh isn't nounse
 [ -n "$RU_URL" ] || die "no ru_url configured"
 single_run update-ru   # bail if a concurrent run (cron vs self-heal) holds the lock
 
-BACKUP_DIR="${BACKUP_DIR:-/root/wg-split-backup-ru}"
 TMP="/tmp/wg-split-update-ru.$$"
-mkdir -p "$TMP" "$(dirname "$RU_FILE")" "$BACKUP_DIR"
+mkdir -p "$TMP" "$(dirname "$RU_FILE")"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 \
     -o "$TMP/raw.lst" "$RU_URL" || die "curl failed: $RU_URL"
 
-awk '
-    function vnum(x, lo, hi) { return x ~ /^[0-9]+$/ && x >= lo && x <= hi }
-    function valid(line, a, n) {
-        n = split(line, a, "[./]")
-        return n == 5 \
-            && vnum(a[1],0,255) && vnum(a[2],0,255) \
-            && vnum(a[3],0,255) && vnum(a[4],0,255) \
-            && vnum(a[5],0,32)
-    }
-    {
-        l = $0
-        sub(/\r$/, "", l)
-        sub(/[ \t]*#.*/, "", l)
-        gsub(/[ \t]/, "", l)
-        if (l == "" || !valid(l) || seen[l]++) next
-        print l
-    }
-' "$TMP/raw.lst" > "$TMP/clean.lst"
+clean_ip_list < "$TMP/raw.lst" > "$TMP/clean.lst"
 
 count=$(wc -l < "$TMP/clean.lst")
 [ "$count" -ge "$RU_MIN_COUNT" ] || die "only $count valid prefixes (need $RU_MIN_COUNT)"
@@ -46,21 +28,13 @@ count=$(wc -l < "$TMP/clean.lst")
 cat "$TMP/clean.lst" > "$RU_FILE"
 log "ru_subnets refresh OK: $count prefixes from $RU_URL"
 
-# Optional nft set refresh — only if RU_SET is actually defined live.
+# Optional nft set refresh — only if RU_SET is actually defined live (full mode).
+# RU_NFT_FILE is the replay source for failover; like ipsum it's regenerated from
+# the daily, min-count-gated download, so no separate backups are kept.
 if nft list set "$RU_TABLE" "$RU_SET" >/dev/null 2>&1; then
     mkdir -p "$(dirname "$RU_NFT_FILE")"
-    {
-        printf 'flush set %s %s\n' "$RU_TABLE" "$RU_SET"
-        printf 'add element %s %s {\n' "$RU_TABLE" "$RU_SET"
-        awk 'NR > 1 { printf "," } { printf "%s", $0 } END { print "" }' "$TMP/clean.lst"
-        printf '}\n'
-    } > "$TMP/live.nft"
+    emit_nft_set_block "$RU_TABLE" "$RU_SET" < "$TMP/clean.lst" > "$TMP/live.nft"
     nft -f "$TMP/live.nft" || die "atomic ru nft update failed"
-
-    [ -s "$RU_NFT_FILE" ] \
-        && cp -a "$RU_NFT_FILE" "$BACKUP_DIR/$(basename "$RU_NFT_FILE").$(date +%Y%m%d-%H%M%S)"
-    ls -t "$BACKUP_DIR"/$(basename "$RU_NFT_FILE").* 2>/dev/null \
-        | awk 'NR > 7' | while IFS= read -r f; do rm -f "$f"; done
     cat "$TMP/live.nft" > "$RU_NFT_FILE"
     log "ru nft set refreshed: $count entries"
 fi

@@ -48,12 +48,7 @@ if [ "$INCLUDE_VPN" = "1" ] && [ "$count" -lt "$ZAPRET_NOZAPRET_MIN" ]; then
     die "too few entries: $count (need $ZAPRET_NOZAPRET_MIN)"
 fi
 
-{
-    printf 'flush set %s %s\n' "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET"
-    printf 'add element %s %s {\n' "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET"
-    awk 'NR > 1 { printf "," } { printf "%s", $0 } END { print "" }' "$TMP/all.lst"
-    printf '}\n'
-} > "$TMP/sync.nft"
+emit_nft_set_block "$ZAPRET_NOZAPRET_TABLE" "$ZAPRET_NOZAPRET_SET" < "$TMP/all.lst" > "$TMP/sync.nft"
 
 nft -f "$TMP/sync.nft" || die "atomic nft sync failed (kept: $TMP/sync.nft)"
 log "nozapret synced: $count entries"

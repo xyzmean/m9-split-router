@@ -157,6 +157,33 @@ set_count() {
     echo "${_cnt:-0}"
 }
 
+# Validate+clean an IPv4/CIDR list on stdin -> stdout: strip CR, trailing
+# comments and whitespace, drop anything that isn't a well-formed v4 addr/prefix,
+# dedup. Shared by the ipsum/ru updaters (identical rules).
+clean_ip_list() {
+    awk '
+        function vnum(x, lo, hi) { return x ~ /^[0-9]+$/ && x >= lo && x <= hi }
+        function valid(line, a, n) {
+            n = split(line, a, "[./]")
+            return n == 5 && vnum(a[1],0,255) && vnum(a[2],0,255) \
+                && vnum(a[3],0,255) && vnum(a[4],0,255) && vnum(a[5],0,32)
+        }
+        { l = $0; sub(/\r$/, "", l); sub(/[ \t]*#.*/, "", l); gsub(/[ \t]/, "", l)
+          if (l == "" || !valid(l) || seen[l]++) next
+          print l }
+    '
+}
+
+# Emit a single compact `flush set; add element { a,b,c }` nft command stream for
+# set "$1 $2" from a cleaned list on stdin. ONE comma-block (not per-line add) —
+# parses in ~10MB vs OOM at 38k+ entries on 240MB routers. Shared by ipsum/ru/noz.
+emit_nft_set_block() {
+    printf 'flush set %s %s\n' "$1" "$2"
+    printf 'add element %s %s {\n' "$1" "$2"
+    awk 'NR > 1 { printf "," } { printf "%s", $0 } END { print "" }'
+    printf '}\n'
+}
+
 has_rule() { ip -4 rule show | grep -q "$1"; }
 
 delete_rule_prio() {
