@@ -67,6 +67,13 @@ for _if in $(endpoints_by_priority); do
     }
     fw_zone_has_masq "$_zone" || \
         warn "endpoint '$_if' zone '$_zone' has masq=0 — VPN return traffic may not route back; enable masquerading on zone '$_zone'"
+    # A zone with masq still REJECTs forwarded LAN->tunnel packets without an
+    # explicit lan->zone forwarding. Skip the check if the LAN zone can't be
+    # resolved, so we never warn on a false negative.
+    _lanz="$(fw_lan_zone)"
+    if [ -n "$_lanz" ] && ! fw_has_forwarding "$_lanz" "$_zone"; then
+        warn "endpoint '$_if': no firewall forwarding '$_lanz' -> '$_zone' — fw4 will REJECT LAN->tunnel traffic; add forwarding src='$_lanz' dest='$_zone'"
+    fi
 done
 
 # ---- nft ruleset (canonical 30-wg-split.nft) -------------------------------

@@ -199,16 +199,57 @@ fw_zone_has_masq() {
     return 1
 }
 
+# Is there a firewall forwarding rule src zone $1 -> dest zone $2?
+fw_has_forwarding() {
+    _ff=0
+    while [ -n "$(uci -q get "firewall.@forwarding[$_ff]" 2>/dev/null)" ]; do
+        [ "$(uci -q get "firewall.@forwarding[$_ff].src"  2>/dev/null)" = "$1" ] && \
+        [ "$(uci -q get "firewall.@forwarding[$_ff].dest" 2>/dev/null)" = "$2" ] && return 0
+        _ff=$((_ff + 1))
+    done
+    return 1
+}
+
+# Firewall zone carrying the LAN — the src side of the lan->tunnel forwarding.
+# Maps $LAN_IFACE (a device, e.g. br-lan) -> its network -> the zone listing that
+# network, with a fall back to a network literally named 'lan'. Empty if it can't
+# be resolved (the caller then skips the forwarding check to avoid false warnings).
+fw_lan_zone() {
+    for _ln in $(uci show network 2>/dev/null \
+            | sed -n "s/^network\.\([^.]*\)\.device='\{0,1\}${LAN_IFACE}'\{0,1\}\$/\1/p"); do
+        _lz="$(fw_zone_of_net "$_ln")" && { echo "$_lz"; return 0; }
+    done
+    _lz="$(fw_zone_of_net lan)" && { echo "$_lz"; return 0; }
+    return 1
+}
+
 # ---- list-updater mutex ----------------------------------------------------
 # The daily cron AND the Save&Apply / daemon self-heal both fire the list
 # updaters, so two copies can run at once; the loser's redundant download then
-# fails curl and spams ERROR into the log. Serialize on a flock so a concurrent
-# run exits cleanly instead. Degrades to a plain run if flock isn't installed.
-# Call as `single_run <tag>` near the top of an updater (uses fd 9).
+# fails curl and spams ERROR into the log. Serialize on a flock. Degrades to a
+# plain run if flock isn't installed. Call as `single_run <tag>` near the top of
+# an updater (uses fd 9).
+#
+# Two intents, by WG_SPLIT_WAIT_LOCK:
+#   unset/0 (cron): a concurrent run already refreshes the same list with the same
+#                   UCI, so just skip — exit cleanly, no ERROR spam.
+#   1 (Save&Apply / self-heal): the new UCI (e.g. a changed list URL) MUST be
+#                   applied, so don't drop it — wait out the holder, then run.
 single_run() {
     command -v flock >/dev/null 2>&1 || return 0
     exec 9>"/tmp/wg-split-$1.lock" || return 0
-    flock -n 9 || { log "$1: another run in progress — skipping"; exit 0; }
+    if [ "${WG_SPLIT_WAIT_LOCK:-0}" = "1" ]; then
+        # busybox flock has no -w; poll -n up to WG_SPLIT_LOCK_WAIT seconds.
+        _sr_n=0
+        until flock -n 9; do
+            _sr_n=$((_sr_n + 1))
+            [ "$_sr_n" -ge "${WG_SPLIT_LOCK_WAIT:-240}" ] \
+                && { log "$1: timed out waiting for lock — not refreshed this run"; exit 1; }
+            sleep 1
+        done
+    else
+        flock -n 9 || { log "$1: another run in progress — skipping"; exit 0; }
+    fi
 }
 
 # `wg show` for either tool — AmneziaWG ifaces answer to `awg`, plain WG to `wg`.
