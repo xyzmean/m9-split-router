@@ -165,6 +165,131 @@ fail_inc() {
 fail_reset() { echo 0 > "$FAIL_COUNTER_FILE"; }
 fail_get()   { cat "$FAIL_COUNTER_FILE" 2>/dev/null || echo 0; }
 
+# ---- firewall sanity (query helpers) ---------------------------------------
+# wg-split owns ROUTING (marks + table 200) but never touches the firewall — a
+# tunnel iface still needs a firewall zone (masq on) and lan->that-zone
+# forwarding, or fw4 REJECTs the forwarded LAN->tunnel packets and the tunnel
+# looks dead though it's up. These read the firewall config with `uci` directly
+# (NOT OpenWrt's config_load, which would clobber the wg-split config context
+# that config_foreach endpoint/device callers rely on).
+
+# Mirror fw4's parse_bool (see OpenWrt fw4.uc): 1/on/true/yes/enabled (any case)
+# are true, everything else (0/off/false/no/disabled/unset/garbage) is false.
+fw_bool() {
+    case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
+        1|on|true|yes|enabled) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Is a firewall section one fw4 actually applies to our IPv4 LAN->tunnel path?
+# i.e. not disabled (enabled defaults ON when unset) and not ipv6-only (family
+# unset/any/both/ipv4). wg-split routes only IPv4, so an ipv6-only zone/forwarding
+# leaves IPv4 traffic rejected and must not count as covering the endpoint. $1 =
+# section selector, e.g. "@zone[2]" / "@forwarding[0]".
+fw_sec_active() {
+    _e="$(uci -q get "firewall.$1.enabled" 2>/dev/null)"
+    [ -n "$_e" ] && ! fw_bool "$_e" && return 1
+    case "$(uci -q get "firewall.$1.family" 2>/dev/null | tr 'A-Z' 'a-z')" in
+        ''|any|both|ipv4|4) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Echo the firewall zone name covering logical iface $1; non-zero if none. Mirrors
+# fw4: a zone matches via its `network` OR `device` list (also resolving the
+# network's own L3 device); disabled / ipv6-only zones are ignored. (Glob device
+# patterns like `tun+` aren't expanded — at worst a spurious warning, never a
+# wrong route, since wg-split only warns here.)
+fw_zone_of_net() {
+    _want="$1"
+    _wantdev="$(uci -q get "network.$1.device" 2>/dev/null)"   # network's L3 device, if any
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        if fw_sec_active "@zone[$_fz]"; then
+            for _m in $(uci -q get "firewall.@zone[$_fz].network" 2>/dev/null) \
+                      $(uci -q get "firewall.@zone[$_fz].device"  2>/dev/null); do
+                if [ "$_m" = "$_want" ] || { [ -n "$_wantdev" ] && [ "$_m" = "$_wantdev" ]; }; then
+                    uci -q get "firewall.@zone[$_fz].name"; return 0
+                fi
+            done
+        fi
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
+# Is masquerading enabled on the (active) zone named $1? masq is an fw4 bool.
+fw_zone_has_masq() {
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ] \
+           && fw_sec_active "@zone[$_fz]"; then
+            fw_bool "$(uci -q get "firewall.@zone[$_fz].masq" 2>/dev/null)"
+            return
+        fi
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
+# Is there an active (enabled, IPv4) firewall forwarding src zone $1 -> dest $2?
+fw_has_forwarding() {
+    _ff=0
+    while [ -n "$(uci -q get "firewall.@forwarding[$_ff]" 2>/dev/null)" ]; do
+        if fw_sec_active "@forwarding[$_ff]" \
+           && [ "$(uci -q get "firewall.@forwarding[$_ff].src"  2>/dev/null)" = "$1" ] \
+           && [ "$(uci -q get "firewall.@forwarding[$_ff].dest" 2>/dev/null)" = "$2" ]; then
+            return 0
+        fi
+        _ff=$((_ff + 1))
+    done
+    return 1
+}
+
+# Firewall zone carrying the LAN — the src side of the lan->tunnel forwarding.
+# Tries $LAN_IFACE's network(s), then $LAN_IFACE bound directly (by device), then
+# the conventional 'lan'. Empty if it can't be resolved (the caller then skips the
+# forwarding check to avoid false warnings).
+fw_lan_zone() {
+    for _ln in $(uci show network 2>/dev/null \
+            | sed -n "s/^network\.\([^.]*\)\.device='\{0,1\}${LAN_IFACE}'\{0,1\}\$/\1/p"); do
+        _lz="$(fw_zone_of_net "$_ln")" && { echo "$_lz"; return 0; }
+    done
+    _lz="$(fw_zone_of_net "$LAN_IFACE")" && { echo "$_lz"; return 0; }
+    _lz="$(fw_zone_of_net lan)"          && { echo "$_lz"; return 0; }
+    return 1
+}
+
+# ---- list-updater mutex ----------------------------------------------------
+# The daily cron AND the Save&Apply / daemon self-heal both fire the list
+# updaters, so two copies can run at once; the loser's redundant download then
+# fails curl and spams ERROR into the log. Serialize on a flock. Degrades to a
+# plain run if flock isn't installed. Call as `single_run <tag>` near the top of
+# an updater (uses fd 9).
+#
+# Two intents, by WG_SPLIT_WAIT_LOCK:
+#   unset/0 (cron): a concurrent run already refreshes the same list with the same
+#                   UCI, so just skip — exit cleanly, no ERROR spam.
+#   1 (Save&Apply / self-heal): the new UCI (e.g. a changed list URL) MUST be
+#                   applied, so don't drop it — wait out the holder, then run.
+single_run() {
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9>"/tmp/wg-split-$1.lock" || return 0
+    if [ "${WG_SPLIT_WAIT_LOCK:-0}" = "1" ]; then
+        # busybox flock has no -w; poll -n up to WG_SPLIT_LOCK_WAIT seconds.
+        _sr_n=0
+        until flock -n 9; do
+            _sr_n=$((_sr_n + 1))
+            [ "$_sr_n" -ge "${WG_SPLIT_LOCK_WAIT:-240}" ] \
+                && { log "$1: timed out waiting for lock — not refreshed this run"; exit 1; }
+            sleep 1
+        done
+    else
+        flock -n 9 || { log "$1: another run in progress — skipping"; exit 0; }
+    fi
+}
+
 # `wg show` for either tool — AmneziaWG ifaces answer to `awg`, plain WG to `wg`.
 # The wrong tool errors with no output, so concatenating is safe.
 wgshow() { awg show "$@" 2>/dev/null; wg show "$@" 2>/dev/null; }

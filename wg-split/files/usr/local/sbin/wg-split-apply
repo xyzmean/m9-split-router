@@ -55,6 +55,27 @@ if [ "$_net_changed" = 1 ]; then
     log "forced route_allowed_ips=0 on endpoints (wg-split owns routing)"
 fi
 
+# ---- firewall sanity (warn only; we never edit the user's firewall) ---------
+# wg-split routes via marks + table 200 but the kernel still runs the forwarded
+# LAN->tunnel packet through fw4. With no firewall zone on the tunnel iface fw4
+# REJECTs it (looks exactly like a dead tunnel — the #1 post-reflash gotcha); with
+# a zone but no masquerading the VPN server can't route the reply back.
+for _if in $(endpoints_by_priority); do
+    _zone="$(fw_zone_of_net "$_if")" || {
+        warn "endpoint '$_if' is in NO firewall zone — fw4 will REJECT LAN->tunnel forwarding; add '$_if' to a zone (masq=1) and allow forwarding lan -> that zone"
+        continue
+    }
+    fw_zone_has_masq "$_zone" || \
+        warn "endpoint '$_if' zone '$_zone' has masq=0 — VPN return traffic may not route back; enable masquerading on zone '$_zone'"
+    # A zone with masq still REJECTs forwarded LAN->tunnel packets without an
+    # explicit lan->zone forwarding. Skip the check if the LAN zone can't be
+    # resolved, so we never warn on a false negative.
+    _lanz="$(fw_lan_zone)"
+    if [ -n "$_lanz" ] && ! fw_has_forwarding "$_lanz" "$_zone"; then
+        warn "endpoint '$_if': no firewall forwarding '$_lanz' -> '$_zone' — fw4 will REJECT LAN->tunnel traffic; add forwarding src='$_lanz' dest='$_zone'"
+    fi
+done
+
 # ---- nft ruleset (canonical 30-wg-split.nft) -------------------------------
 emit_set() {  # $1 set name, $2 size, stdin = cidrs
     _items="$(cat | tr '\n' ' ' | sed 's/  */, /g; s/^ *//; s/, *$//')"

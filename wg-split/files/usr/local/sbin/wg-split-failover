@@ -239,7 +239,10 @@ if [ "${1:-}" = "--daemon" ]; then
     # missing) gets fetched now in the background instead of waiting for the
     # daily cron. The updaters check enabled/URL themselves and re-apply on
     # success, so this only does work when a file is actually absent.
-    ( [ -s "$IPSUM_NFT_FILE" ]   || /usr/local/sbin/wg-split-update-ipsum
+    # WAIT_LOCK: a missing list must actually be fetched, not skipped behind a
+    # concurrent cron/apply run — wait out the holder rather than dropping it.
+    ( export WG_SPLIT_WAIT_LOCK=1
+      [ -s "$IPSUM_NFT_FILE" ]   || /usr/local/sbin/wg-split-update-ipsum
       [ -s "$RU_FILE" ]          || /usr/local/sbin/wg-split-update-ru
       [ -s "$DOMAINS_VPN_FILE" ] || /usr/local/sbin/wg-split-update-domains
     ) >/dev/null 2>&1 &

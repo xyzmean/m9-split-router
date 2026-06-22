@@ -9,6 +9,8 @@
 set -e   # fail-fast on curl/validation; no `-u`, /lib/functions.sh isn't nounset-safe
 . /usr/local/lib/wg-split/common.sh
 
+single_run update-domains   # bail if a concurrent run (cron vs self-heal) holds the lock
+
 TMP="/tmp/wg-split-update-domains.$$"
 mkdir -p "$TMP" "$(dirname "$DOMAINS_VPN_FILE")"
 trap 'rm -rf "$TMP"' EXIT INT TERM
