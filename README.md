@@ -49,8 +49,11 @@ OpenWrt 24.10+ (apk). Build the two packages in CI (see `.github/workflows/build
 or with an OpenWrt SDK, then:
 
 ```sh
-apk add ./wg-split-*.apk ./luci-app-wg-split-*.apk
+apk add ./wg-split-*.apk ./luci-app-wg-split-*.apk ./luci-i18n-wg-split-*.apk
 ```
+
+(`luci-i18n-wg-split-*` is the LuCI translation package — install it for the
+localized UI; it's optional and English is built in.)
 
 `zapret` is optional — install it separately if you want the DPI-bypass rung; it's
 detected at runtime.
@@ -125,3 +128,9 @@ LAN forwarding, and the `ipsum` set above its minimum. The same flow applies to
 | `wg-split/files/usr/local/sbin/wg-split-sync-nozapret` | rebuild zapret bypass set |
 | `wg-split/files/usr/local/lib/wg-split/common.sh` | shared helpers (loads UCI) |
 | `luci-app-wg-split/` | LuCI configuration page |
+
+## Documentation
+
+A full Russian wiki lives in [`docs/ru/`](docs/ru/Home.md) — installation,
+configuration & the LuCI panel, routing modes, failover, lists/zapret,
+diagnostics, troubleshooting, CLI reference and FAQ.

@@ -75,7 +75,8 @@ jobs:
           id=$(docker create wg-split:rel)
           docker cp "$id:/builder/bin/packages/." ./out/
           docker rm "$id"
-          find ./out \( -name 'wg-split*.apk' -o -name 'luci-app-wg-split*.apk' \) \
+          find ./out \( -name 'wg-split*.apk' -o -name 'luci-app-wg-split*.apk' \
+                        -o -name 'luci-i18n-wg-split-*.apk' \) \
                -exec cp -v {} artifacts/ \;
           ls -l artifacts
 
