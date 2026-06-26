@@ -59,6 +59,11 @@ check_iface() {
     if [ -n "$_lz" ]; then
         if fw_has_forwarding "$_lz" "$_z"; then echo "fwd lan->ep : $_lz -> $_z"
         else echo "fwd lan->ep : MISSING ($_lz -> $_z)"; _miss="$_miss fwd-lan"; fi
+        # The fix path also adds the reverse zone->lan forwarding so site-to-site
+        # traffic the remote LAN *initiates* can reach local clients. Verify it too,
+        # otherwise check reports OK while remote-initiated traffic is still REJECTed.
+        if fw_has_forwarding "$_z" "$_lz"; then echo "fwd ep->lan : $_z -> $_lz"
+        else echo "fwd ep->lan : MISSING ($_z -> $_lz)"; _miss="$_miss fwd-eplan"; fi
     fi
     _wz="$(wan_zone)"
     if fw_has_forwarding "$_z" "$_wz"; then echo "fwd ep->wan : $_z -> $_wz"
