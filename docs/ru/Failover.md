@@ -67,10 +67,30 @@ WAN**. Блэкхол ставится и заранее, на время раз
 один туннель не здоров, и обнуляется при выборе VPN. Виден в hero-баннере LuCI и в
 `wg-split-doctor`.
 
+## Журнал событий (таймлайн)
+
+Каждый значимый переход демон дописывает в RAM-журнал
+`/var/run/wg-split-events` (кольцевой буфер, последние ~200 строк, формат
+`ts<TAB>kind<TAB>from<TAB>to<TAB>reason`). Виды событий:
+
+| Вид | Когда |
+|-----|-------|
+| `switch` | переключение на другой VPN-туннель |
+| `recover` | возврат на VPN после деградации |
+| `restart` | перезапуск зависшего туннеля (`ifdown`/`ifup`) |
+| `killswitch` | блэкхол таблицы 200 (все туннели мертвы, kill switch=1) |
+| `zapret_fallback` | деградация на WAN с обходом DPI zapret |
+| `wan_fallback` | деградация на обычный WAN |
+
+Журналирование — best-effort и **никогда не ломает** failover. CLI-доступ:
+`wg-split-doctor --events` (JSON, новейшие сверху). Панель LuCI рисует это как
+**таймлайн отказоустойчивости**.
+
 ## Состояние
 
 Активный путь хранится в `/var/run/wg-split-state`: `vpn:<iface>` | `zapret` |
-`wan` | `killswitch`. Журнал переходов — `logread -e wg-split`.
+`wan` | `killswitch`. Полный журнал службы — `logread -e wg-split`; компактный
+таймлайн переходов — `wg-split-doctor --events`.
 
 См. [Диагностику](Diagnostics.md) для разбора, почему туннель считается мёртвым
 (чаще всего — firewall, см. [Устранение неполадок](Troubleshooting.md)).

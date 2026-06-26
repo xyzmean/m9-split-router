@@ -1,27 +1,19 @@
 {
 	"luci-app-wg-split": {
-		"description": "Grant access to wg-split configuration",
+		"description": "Grant access to wg-split status, diagnostics and maintenance actions",
 		"read": {
 			"uci": [ "wg-split", "network" ],
 			"ubus": {
 				"network.interface": [ "dump" ],
 				"network": [ "get_proto_handlers" ],
-				"file": [ "exec" ]
-			},
-			"file": {
-				"/usr/local/sbin/wg-split-status": [ "exec" ],
-				"/usr/local/sbin/wg-split-doctor": [ "exec" ]
+				"luci-rpc": [ "getHostHints" ],
+				"wg-split": [ "status", "events" ]
 			}
 		},
 		"write": {
 			"uci": [ "wg-split" ],
-			"file": {
-				"/usr/local/sbin/wg-split-apply": [ "exec" ],
-				"/usr/local/sbin/wg-split-disable": [ "exec" ],
-				"/usr/local/sbin/wg-split-update-ipsum": [ "exec" ],
-				"/usr/local/sbin/wg-split-update-ru": [ "exec" ],
-				"/usr/local/sbin/wg-split-update-domains": [ "exec" ],
-				"/etc/init.d/wg-split": [ "exec" ]
+			"ubus": {
+				"wg-split": [ "action" ]
 			}
 		}
 	}

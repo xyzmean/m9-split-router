@@ -12,6 +12,23 @@ The next development track focuses on:
 - a LuCI dashboard that explains current state and failures;
 - user-facing setup, verification, and troubleshooting.
 
+## Shipped
+
+- **1.7.x** — `wg-split-doctor` structured checks (`OK`/`WARN`/`FIXABLE`/`FAIL`),
+  passive diagnostics, exact routing assertions; LuCI status panel + i18n.
+- **2.0.0** — dashboard/settings tab split; live per-tunnel traffic; failover
+  timeline (`--events`); one-click firewall auto-fix (`wg-split-firewall`);
+  least-privilege rpcd/ubus object; site-to-site doctor check; transport-agnostic
+  endpoint seam (`type` + `ep_*`); CI `shellcheck`/`bats`; config migration.
+
+## Next (3.0.0)
+
+- **Multi-transport outbounds** via sing-box (VLESS/Hysteria) as an alternative to
+  WireGuard/AmneziaWG, selected per endpoint with `type=singbox`. The 2.0.0
+  `ep_*` dispatch + `type` field are the seam; 3.0.0 adds the sing-box manager and
+  `ep_liveness`/`ep_bringup` implementations for it.
+- IPv6 policy routing; WG key/peer management; per-endpoint metrics history.
+
 ## 1. Core Reliability And Diagnostics
 
 Goal: make the router able to answer "what is broken and what should I fix?"

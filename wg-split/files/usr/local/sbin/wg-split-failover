@@ -29,17 +29,18 @@ wan_healthy() {
     curl --max-time "$HEALTH_CURL_TIMEOUT" -fsS -o /dev/null "$HEALTH_CURL_URL" >/dev/null 2>&1
 }
 
+# wait for an endpoint to report liveness (wg = handshake age via ep_liveness).
 wait_handshake() {
     _i=0
     while [ "$_i" -lt "$HS_WAIT" ]; do
-        [ "$(wg_handshake_age "$1")" -lt 150 ] 2>/dev/null && return 0
+        [ "$(ep_liveness "$1")" -lt 150 ] 2>/dev/null && return 0
         sleep 1; _i=$((_i + 1))
     done
     return 1
 }
 
 iface_healthy() {
-    iface_present "$1" || return 1
+    ep_present "$1" || return 1
     # health_ping is authoritative AND wakes an idle tunnel (its first packet
     # triggers a handshake), so don't pre-reject on a stale handshake age — a
     # keepalive-less idle peer would otherwise look dead though it still works.
@@ -48,13 +49,13 @@ iface_healthy() {
 
 restart_iface() {   # WG often unsticks on a plain restart — do this FIRST
     log "restarting stuck iface $1"
-    ifdown "$1" >/dev/null 2>&1 || true
-    ifup   "$1" >/dev/null 2>&1 || true
+    journal restart "$1" "$1" "stuck endpoint restarted"
+    ep_restart "$1"
     wait_handshake "$1"
 }
 
-bring_up() {        # ifup a candidate in parallel (no list/route changes yet)
-    ifup "$1" >/dev/null 2>&1 || /etc/init.d/network reload >/dev/null 2>&1 || true
+bring_up() {        # bring a candidate up in parallel (no list/route changes yet)
+    ep_bringup "$1"
     wait_handshake "$1"
 }
 
@@ -191,12 +192,28 @@ tick() {
     _prev="$(read_state)"
     if [ -n "$_best" ]; then
         set_vpn "$_best"
-        [ "$_prev" = "vpn:$_best" ] || log "active tunnel -> $_best (mode $MODE)"
+        if [ "$_prev" != "vpn:$_best" ]; then
+            log "active tunnel -> $_best (mode $MODE)"
+            # journal the transition (backs the LuCI timeline). Coming from another
+            # tunnel is a `switch`; coming from a degraded path (wan/zapret/kill/cold)
+            # is a `recover`.
+            case "$_prev" in
+                vpn:*) journal switch  "${_prev#vpn:}" "$_best" "failover" ;;
+                *)     journal recover "${_prev:-none}" "$_best" "tunnel back up" ;;
+            esac
+        fi
     else
         _n=$(fail_inc)
         degrade
         _now="$(read_state)"
-        [ "$_prev" = "$_now" ] || log "all tunnels down (fail #$_n) -> $_now"
+        if [ "$_prev" != "$_now" ]; then
+            log "all tunnels down (fail #$_n) -> $_now"
+            case "$_now" in
+                killswitch) journal killswitch      "${_prev:-none}" killswitch "all tunnels down (fail #$_n)" ;;
+                zapret)     journal zapret_fallback  "${_prev:-none}" zapret     "all tunnels down (fail #$_n)" ;;
+                wan)        journal wan_fallback     "${_prev:-none}" wan        "all tunnels down (fail #$_n)" ;;
+            esac
+        fi
     fi
 }
 

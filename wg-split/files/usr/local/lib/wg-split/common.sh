@@ -108,6 +108,83 @@ endpoints_by_priority() {
 }
 # the single highest-priority iface (used as default/active fallback).
 top_endpoint() { endpoints_by_priority | awk '{print $1}'; }
+# True iff $1 is a configured wg-split endpoint iface. Used to gate privileged,
+# operator-invoked mutations (e.g. firewall-zone fixes) so they can only ever
+# touch wg-split's own tunnels — never an arbitrary iface like `wan`.
+is_endpoint() {
+    [ -n "$1" ] || return 1   # empty would match the gap between list entries
+    case " $(endpoints_by_priority) " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+# True iff $1 is an actual WireGuard/AmneziaWG interface in /etc/config/network.
+# A SECOND gate for privileged firewall mutation: is_endpoint only proves a name
+# appears in wg-split's UCI, but a caller holding the wg-split write ACL could add
+# an arbitrary iface (e.g. `guest`, already in its own firewall zone) as an
+# endpoint section and then fw_fix it. Requiring a real tunnel proto confines
+# masq/forwarding fixes to genuine tunnels — they can never be pointed at a
+# foreign zone. (2.0.0 ships only the `wg` transport; sing-box lands in 3.0.)
+iface_is_wg() {
+    case "$(uci -q get "network.$1.proto" 2>/dev/null)" in
+        wireguard|amneziawg) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+# The L3 device a network section binds to: its explicit `device` option, else the
+# section name (wg/awg sections name the kernel device after the section).
+iface_l3dev() { _d="$(uci -q get "network.$1.device" 2>/dev/null)"; [ -n "$_d" ] && echo "$_d" || echo "$1"; }
+# True iff L3 device $1 is the device of some WireGuard/AmneziaWG network section.
+# Lets the zone helpers recognise a firewall zone that lists a tunnel by its exact
+# device (`list device 'wg0'`) rather than by network name.
+device_is_wg() {  # device
+    [ -n "$1" ] || return 1
+    for _dw in $(uci show network 2>/dev/null | sed -n 's/^network\.\([^.=]*\)=interface$/\1/p'); do
+        iface_is_wg "$_dw" || continue
+        [ "$(iface_l3dev "$_dw")" = "$1" ] && return 0
+    done
+    return 1
+}
+
+# ---- endpoint type dispatch (transport-agnostic seam; design §2.2) ----------
+# Every endpoint carries a `type` (default wg, covering wireguard+amneziawg). All
+# type-specific logic funnels through these narrow helpers so 3.0.0 can add a
+# sing-box (vless/hysteria) backend without touching failover/doctor/ubus/UI.
+# 2.0.0 implements only `wg`; an unknown/future type falls back to wg behavior so
+# an existing config can never silently break. (`wg|*)` = "wg, and anything not
+# yet implemented behaves as wg".)
+_ep_type_emit() {  # $1=section $2=wanted iface — print type if it matches
+    config_get _ete_i "$1" iface ''
+    [ "$_ete_i" = "$2" ] || return 0
+    config_get _ete_t "$1" type 'wg'; [ -n "$_ete_t" ] || _ete_t=wg
+    printf '%s\n' "$_ete_t"
+}
+ep_type() { config_foreach _ep_type_emit endpoint "$1" | head -1; }
+
+# Is there a live egress device for this endpoint? (wg = kernel link present)
+ep_present() { case "$(ep_type "$1")" in wg|*) iface_present "$1" ;; esac; }
+# L3 device for `ip route … dev` (wg = the iface itself).
+ep_egress_dev() { case "$(ep_type "$1")" in wg|*) echo "$1" ;; esac; }
+# Liveness age in seconds, smaller = healthier (wg = handshake age; 999999 down).
+ep_liveness() { case "$(ep_type "$1")" in wg|*) wg_handshake_age "$1" ;; esac; }
+# rx/tx cumulative bytes — echoes "rx tx" (wg = summed `wg show transfer`).
+ep_transfer() {
+    case "$(ep_type "$1")" in
+        wg|*) wgshow "$1" transfer \
+            | awk '{rx+=$2; tx+=$3} END{printf "%d %d", rx+0, tx+0}' ;;
+    esac
+}
+# Bring an endpoint up / restart it (wg = ifup / ifdown+ifup). Callers that need
+# to wait for liveness do so themselves (failover's wait_handshake).
+ep_bringup() {
+    case "$(ep_type "$1")" in
+        wg|*) ifup "$1" >/dev/null 2>&1 \
+            || /etc/init.d/network reload >/dev/null 2>&1 || true ;;
+    esac
+}
+ep_restart() {
+    case "$(ep_type "$1")" in
+        wg|*) ifdown "$1" >/dev/null 2>&1 || true
+              ifup "$1" >/dev/null 2>&1 || true ;;
+    esac
+}
 
 # ---- active-path state -----------------------------------------------------
 # State file holds the live path: "vpn:<iface>" | "zapret" | "wan".
@@ -206,6 +283,20 @@ fail_inc() {
 fail_reset() { echo 0 > "$FAIL_COUNTER_FILE"; }
 fail_get()   { cat "$FAIL_COUNTER_FILE" 2>/dev/null || echo 0; }
 
+# ---- failover event journal (RAM ring buffer; backs the LuCI timeline) ------
+# Append "ts<TAB>kind<TAB>from<TAB>to<TAB>reason" to a tmpfs file (/var/run — no
+# flash wear), trimmed to the last EVENTS_MAX lines. kind ∈ switch | recover |
+# restart | killswitch | zapret_fallback | wan_fallback. Read back as JSON by
+# `wg-split-doctor --events`. Best-effort: a failed write never breaks failover.
+EVENTS_FILE="/var/run/wg-split-events"
+EVENTS_MAX="200"
+journal() {  # kind [from] [to] [reason]
+    { printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(date +%s)" "$1" "${2:-}" "${3:-}" "${4:-}" >> "$EVENTS_FILE"; } 2>/dev/null || return 0
+    _je="$(tail -n "$EVENTS_MAX" "$EVENTS_FILE" 2>/dev/null)" \
+        && printf '%s\n' "$_je" > "$EVENTS_FILE" 2>/dev/null || true
+}
+
 # ---- firewall sanity (query helpers) ---------------------------------------
 # wg-split owns ROUTING (marks + table 200) but never touches the firewall — a
 # tunnel iface still needs a firewall zone (masq on) and lan->that-zone
@@ -274,6 +365,38 @@ fw_zone_has_masq() {
     return 1
 }
 
+# Is MSS clamping (mtu_fix) enabled on the (active) zone named $1? fw4 bool. Off
+# (or unset) stalls large packets on low-MTU wg/PPPoE paths.
+fw_zone_has_mtu_fix() {
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ] \
+           && fw_sec_active "@zone[$_fz]"; then
+            fw_bool "$(uci -q get "firewall.@zone[$_fz].mtu_fix" 2>/dev/null)"
+            return
+        fi
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
+# Are zone $1's input/output/forward policies all ACCEPT? The reference tunnel zone
+# is accept-all; a REJECT/DROP (or unset -> restrictive fw4 default) input/forward
+# blocks router-originated tunnel probes and site-to-site / intra-zone traffic.
+fw_zone_policies_open() {  # zone-name
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ]; then
+            for _fp in input output forward; do
+                [ "$(uci -q get "firewall.@zone[$_fz].$_fp" 2>/dev/null)" = "ACCEPT" ] || return 1
+            done
+            return 0
+        fi
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
 # Is there an active (enabled, IPv4) firewall forwarding src zone $1 -> dest $2?
 fw_has_forwarding() {
     _ff=0
@@ -299,6 +422,74 @@ fw_lan_zone() {
     done
     _lz="$(fw_zone_of_net "$LAN_IFACE")" && { echo "$_lz"; return 0; }
     _lz="$(fw_zone_of_net lan)"          && { echo "$_lz"; return 0; }
+    return 1
+}
+
+# WAN firewall zone name: the zone covering the 'wan' network, else the
+# conventional 'wan'. The dest of the tunnel's egress forwarding.
+fw_wan_zone() { fw_zone_of_net wan 2>/dev/null || echo wan; }
+
+# Is zone $1 a SHARED infrastructure zone — the WAN or LAN zone? Echoes the role
+# ("WAN"/"LAN") and returns 0 if so. A wg-split endpoint placed in such a zone
+# must NOT get masq / reverse-forwarding fixes: that would open the ENTIRE WAN/LAN
+# zone, not just the tunnel. Used by wg-split-firewall (refuse to touch it) and by
+# the doctor (flag it instead of reporting the shared zone's state as healthy).
+fw_zone_is_shared() {  # zone-name
+    [ -n "$1" ] || return 1
+    [ "$1" = "$(fw_wan_zone)" ] && { echo WAN; return 0; }
+    [ "$1" = "$(fw_lan_zone)" ] && { echo LAN; return 0; }
+    return 1
+}
+
+# True iff EVERY network the firewall zone named $1 covers is a WireGuard/AmneziaWG
+# tunnel (no plain LAN/guest/etc. member). Gates the reverse zone->LAN forwarding:
+# adding it to a zone that ALSO holds non-tunnel networks would grant those
+# networks inbound LAN access, not just the tunnel. A zone with a bound `device`
+# entry (raw L3 dev or glob we can't map back to a tunnel network) is NOT
+# tunnel-only. An unknown zone name returns false.
+fw_zone_is_tunnel_only() {  # zone-name
+    [ -n "$1" ] || return 1
+    _zt=0; _zt_seen=0
+    while [ -n "$(uci -q get "firewall.@zone[$_zt]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_zt].name" 2>/dev/null)" = "$1" ]; then
+            _zt_seen=1
+            for _ztn in $(uci -q get "firewall.@zone[$_zt].network" 2>/dev/null); do
+                iface_is_wg "$_ztn" || return 1
+            done
+            for _ztd in $(uci -q get "firewall.@zone[$_zt].device" 2>/dev/null); do
+                # an exact device that IS a tunnel's L3 device qualifies; a glob (or
+                # any non-tunnel device) can't be proven tunnel-only -> reject.
+                case "$_ztd" in *[*+?]*) return 1 ;; esac
+                device_is_wg "$_ztd" || return 1
+            done
+        fi
+        _zt=$((_zt + 1))
+    done
+    [ "$_zt_seen" = 1 ]
+}
+
+# If iface $1 is already covered by an existing firewall zone via a DEVICE
+# wildcard (e.g. device 'wg+' / 'tun+' / 'wg*'), echo that zone's name and return
+# 0. fw_zone_of_net() deliberately does NOT expand globs, so without this an
+# auto-create would add a SECOND, overlapping zone for an iface a glob zone
+# already covers. Only trailing-wildcard device patterns are recognised.
+fw_zone_glob_covering() {  # iface
+    [ -n "$1" ] || return 1
+    _gdev="$(iface_l3dev "$1")"   # resolve the endpoint's L3 device too (it may differ from the section name)
+    _zg=0
+    while [ -n "$(uci -q get "firewall.@zone[$_zg]" 2>/dev/null)" ]; do
+        if fw_sec_active "@zone[$_zg]"; then
+            for _zgd in $(uci -q get "firewall.@zone[$_zg].device" 2>/dev/null); do
+                case "$_zgd" in
+                    *[*+])
+                        _zgp="${_zgd%[*+]}"
+                        case "$1"     in "$_zgp"*) uci -q get "firewall.@zone[$_zg].name"; return 0 ;; esac
+                        case "$_gdev" in "$_zgp"*) uci -q get "firewall.@zone[$_zg].name"; return 0 ;; esac ;;
+                esac
+            done
+        fi
+        _zg=$((_zg + 1))
+    done
     return 1
 }
 
