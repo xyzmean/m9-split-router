@@ -40,7 +40,11 @@ check_iface() {
     _miss=""
     _z="$(fw_zone_of_net "$IFACE" 2>/dev/null)" || _z=""
     if [ -z "$_z" ]; then
-        echo "zone        : MISSING ($IFACE is in no firewall zone)"
+        if _gz="$(fw_zone_glob_covering "$IFACE")"; then
+            echo "zone        : WILDCARD ($IFACE is matched by zone '$_gz' via a device glob — repair that zone manually; auto-create refuses to overlap it)"
+        else
+            echo "zone        : MISSING ($IFACE is in no firewall zone)"
+        fi
         return 1
     fi
     if _role="$(fw_zone_is_shared "$_z")"; then
@@ -54,11 +58,15 @@ check_iface() {
     if [ -n "$_lz" ]; then
         if fw_has_forwarding "$_lz" "$_z"; then echo "fwd lan->ep : $_lz -> $_z"
         else echo "fwd lan->ep : MISSING ($_lz -> $_z)"; _miss="$_miss fwd-lan"; fi
-        # The fix path also adds the reverse zone->lan forwarding so site-to-site
-        # traffic the remote LAN *initiates* can reach local clients. Verify it too,
-        # otherwise check reports OK while remote-initiated traffic is still REJECTed.
-        if fw_has_forwarding "$_z" "$_lz"; then echo "fwd ep->lan : $_z -> $_lz"
-        else echo "fwd ep->lan : MISSING ($_z -> $_lz)"; _miss="$_miss fwd-eplan"; fi
+        # The fix path adds the reverse zone->lan forwarding (site-to-site inbound)
+        # ONLY for a tunnel-only zone, so demand it only there — a shared custom zone
+        # intentionally omits it (adding it would open LAN to non-tunnel members).
+        if fw_zone_is_tunnel_only "$_z"; then
+            if fw_has_forwarding "$_z" "$_lz"; then echo "fwd ep->lan : $_z -> $_lz"
+            else echo "fwd ep->lan : MISSING ($_z -> $_lz)"; _miss="$_miss fwd-eplan"; fi
+        else
+            echo "fwd ep->lan : SKIP ($_z holds non-tunnel networks; reverse forwarding withheld)"
+        fi
     fi
     _wz="$(fw_wan_zone)"
     if fw_has_forwarding "$_z" "$_wz"; then echo "fwd ep->wan : $_z -> $_wz"
@@ -88,7 +96,9 @@ ensure_masq() {  # zone-name
         if [ "$(uci -q get "firewall.@zone[$_zi].name" 2>/dev/null)" = "$1" ]; then
             fw_bool "$(uci -q get "firewall.@zone[$_zi].masq" 2>/dev/null)" \
                 || { uci set "firewall.@zone[$_zi].masq=1"; CHANGED=1; }
-            [ -n "$(uci -q get "firewall.@zone[$_zi].mtu_fix" 2>/dev/null)" ] \
+            # mtu_fix is an fw4 bool too: an explicit '0' must be FLIPPED, not left
+            # as-is (MSS clamping off => large-packet stalls on low-MTU wg/PPPoE).
+            fw_bool "$(uci -q get "firewall.@zone[$_zi].mtu_fix" 2>/dev/null)" \
                 || { uci set "firewall.@zone[$_zi].mtu_fix=1"; CHANGED=1; }
             return 0
         fi
@@ -104,6 +114,12 @@ fix_iface() {
         die "$IFACE is in the shared '$ZONE' ($_role) firewall zone; give the tunnel its own zone before fixing — refusing to add masq/forwarding to a shared zone"
     fi
     if [ -z "$ZONE" ]; then
+        # fw_zone_of_net doesn't expand globs: if a zone already covers this iface
+        # via a device wildcard (e.g. 'wg+'), creating a name=iface zone would make
+        # fw4 see overlapping zones and never repair the real one. Refuse instead.
+        if _gz="$(fw_zone_glob_covering "$IFACE")"; then
+            die "$IFACE is already covered by firewall zone '$_gz' via a device wildcard; repair that zone (masq + lan<->zone + zone->wan) instead — refusing to create an overlapping zone"
+        fi
         # New zone modelled on the reference AmneziaWG zone: accept-all + masq +
         # mtu_fix, carrying the endpoint network. Zone name = iface (the convention).
         ZONE="$IFACE"
@@ -123,9 +139,19 @@ fix_iface() {
 
     _lz="$(fw_lan_zone)"
     _wz="$(fw_wan_zone)"
-    # lan<->zone (both directions so site-to-site replies from the remote LAN reach
-    # local clients) and zone->wan (tunnel transport / DoH egress).
-    if [ -n "$_lz" ]; then add_forwarding "$_lz" "$ZONE"; add_forwarding "$ZONE" "$_lz"; fi
+    # lan->zone (LAN clients reach the tunnel) and zone->wan (tunnel transport / DoH
+    # egress) are always safe. The REVERSE zone->lan (site-to-site inbound) is added
+    # ONLY when the zone is tunnel-only: on a zone that also holds non-tunnel
+    # networks it would grant those networks LAN access. A freshly-created zone
+    # (name=iface, single tunnel member) qualifies.
+    if [ -n "$_lz" ]; then
+        add_forwarding "$_lz" "$ZONE"
+        if fw_zone_is_tunnel_only "$ZONE"; then
+            add_forwarding "$ZONE" "$_lz"
+        else
+            warn "firewall: zone '$ZONE' also holds non-tunnel networks — skipping reverse $ZONE->$_lz forwarding; give $IFACE a dedicated zone for site-to-site inbound"
+        fi
+    fi
     add_forwarding "$ZONE" "$_wz"
 
     if [ "$CHANGED" = 1 ]; then

@@ -395,6 +395,51 @@ fw_zone_is_shared() {  # zone-name
     return 1
 }
 
+# True iff EVERY network the firewall zone named $1 covers is a WireGuard/AmneziaWG
+# tunnel (no plain LAN/guest/etc. member). Gates the reverse zone->LAN forwarding:
+# adding it to a zone that ALSO holds non-tunnel networks would grant those
+# networks inbound LAN access, not just the tunnel. A zone with a bound `device`
+# entry (raw L3 dev or glob we can't map back to a tunnel network) is NOT
+# tunnel-only. An unknown zone name returns false.
+fw_zone_is_tunnel_only() {  # zone-name
+    [ -n "$1" ] || return 1
+    _zt=0; _zt_seen=0
+    while [ -n "$(uci -q get "firewall.@zone[$_zt]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_zt].name" 2>/dev/null)" = "$1" ]; then
+            _zt_seen=1
+            for _ztn in $(uci -q get "firewall.@zone[$_zt].network" 2>/dev/null); do
+                iface_is_wg "$_ztn" || return 1
+            done
+            [ -n "$(uci -q get "firewall.@zone[$_zt].device" 2>/dev/null)" ] && return 1
+        fi
+        _zt=$((_zt + 1))
+    done
+    [ "$_zt_seen" = 1 ]
+}
+
+# If iface $1 is already covered by an existing firewall zone via a DEVICE
+# wildcard (e.g. device 'wg+' / 'tun+' / 'wg*'), echo that zone's name and return
+# 0. fw_zone_of_net() deliberately does NOT expand globs, so without this an
+# auto-create would add a SECOND, overlapping zone for an iface a glob zone
+# already covers. Only trailing-wildcard device patterns are recognised.
+fw_zone_glob_covering() {  # iface
+    [ -n "$1" ] || return 1
+    _zg=0
+    while [ -n "$(uci -q get "firewall.@zone[$_zg]" 2>/dev/null)" ]; do
+        if fw_sec_active "@zone[$_zg]"; then
+            for _zgd in $(uci -q get "firewall.@zone[$_zg].device" 2>/dev/null); do
+                case "$_zgd" in
+                    *[*+])
+                        _zgp="${_zgd%[*+]}"
+                        case "$1" in "$_zgp"*) uci -q get "firewall.@zone[$_zg].name"; return 0 ;; esac ;;
+                esac
+            done
+        fi
+        _zg=$((_zg + 1))
+    done
+    return 1
+}
+
 # ---- list-updater mutex ----------------------------------------------------
 # The daily cron AND the Save&Apply / daemon self-heal both fire the list
 # updaters, so two copies can run at once; the loser's redundant download then

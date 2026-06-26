@@ -124,11 +124,15 @@ for _if in $ORDERED; do
                 # the firewall otherwise looks healthy — exactly what wg-split-firewall
                 # fix establishes. Only relevant with vpn_cidr set: plain outbound
                 # replies ride conntrack ESTABLISHED and need no reverse rule.
-                if [ -n "$VPN_CIDRS" ] && ! fw_has_forwarding "$_zone" "$LANZ"; then
+                if [ -n "$VPN_CIDRS" ] && fw_zone_is_tunnel_only "$_zone" \
+                   && ! fw_has_forwarding "$_zone" "$LANZ"; then
                     add FAIL firewall "$_if: no reverse forwarding '$_zone' -> '$LANZ' (fw4 will REJECT remote-initiated site-to-site traffic to LAN)" "wg-split-firewall fix $_if"
                 fi
             fi
         fi
+    elif _gz="$(fw_zone_glob_covering "$_if")"; then
+        # Covered by a device-glob zone (e.g. 'wg+'); auto-create would overlap it.
+        add WARN firewall "$_if: not in an explicit firewall zone but matched by zone '$_gz' via a device wildcard — verify it has masq + lan<->zone + zone->wan" "review firewall zone '$_gz' (auto-fix won't create an overlapping zone)"
     else
         add FAIL firewall "$_if: not in any firewall zone (fw4 will REJECT LAN->tunnel)" "add '$_if' to a firewall zone with masq=1"
     fi

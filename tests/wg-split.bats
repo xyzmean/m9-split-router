@@ -151,3 +151,56 @@ config_get() { eval "$1=\"\${cfg_${2}_${3}:-$4}\""; }
     run fw_zone_is_shared wg0;  [ "$status" -ne 0 ]
     run fw_zone_is_shared "";   [ "$status" -ne 0 ]
 }
+
+# Reverse zone->lan forwarding is gated on a tunnel-only zone: a zone that also
+# holds a non-tunnel network (or a bound device) must NOT get it.
+@test "fw_zone_is_tunnel_only true for all-wg zone, false otherwise" {
+    load_fn "$COMMON_SH" iface_is_wg
+    load_fn "$COMMON_SH" fw_zone_is_tunnel_only
+    # NB: bracket patterns are single-quoted so case treats '[0]' literally, not as
+    # a glob character class.
+    uci() {
+        case "$3" in
+            'firewall.@zone[0]') echo x ;;
+            'firewall.@zone[0].name') echo vpn ;;
+            'firewall.@zone[0].network') echo "wg0 awg0" ;;
+            'firewall.@zone[1]') echo x ;;
+            'firewall.@zone[1].name') echo mixed ;;
+            'firewall.@zone[1].network') echo "wg0 guest" ;;
+            'firewall.@zone[2]') echo x ;;
+            'firewall.@zone[2].name') echo dev ;;
+            'firewall.@zone[2].device') echo wg0 ;;
+            network.wg0.proto) echo wireguard ;;
+            network.awg0.proto) echo amneziawg ;;
+            network.guest.proto) echo static ;;
+            *) echo "" ;;
+        esac
+    }
+    run fw_zone_is_tunnel_only vpn;   [ "$status" -eq 0 ]
+    run fw_zone_is_tunnel_only mixed; [ "$status" -ne 0 ]   # non-tunnel member
+    run fw_zone_is_tunnel_only dev;   [ "$status" -ne 0 ]   # bound device, unprovable
+    run fw_zone_is_tunnel_only none;  [ "$status" -ne 0 ]   # unknown zone
+}
+
+# Auto-create must refuse an iface already covered by a device-wildcard zone, or
+# fw4 would see two overlapping zones for the same interface.
+@test "fw_zone_glob_covering matches trailing-wildcard device zones" {
+    load_fn "$COMMON_SH" fw_bool
+    load_fn "$COMMON_SH" fw_sec_active
+    load_fn "$COMMON_SH" fw_zone_glob_covering
+    # bracket patterns single-quoted (see note above) so '[0]' is matched literally.
+    uci() {
+        case "$3" in
+            'firewall.@zone[0]') echo x ;;
+            'firewall.@zone[0].name') echo vpn ;;
+            'firewall.@zone[0].device') echo 'wg+' ;;
+            'firewall.@zone[1]') echo x ;;
+            'firewall.@zone[1].name') echo lan ;;
+            'firewall.@zone[1].device') echo 'eth0' ;;
+            *) echo "" ;;
+        esac
+    }
+    run fw_zone_glob_covering wg0;  [ "$status" -eq 0 ]; [ "$output" = vpn ]
+    run fw_zone_glob_covering tun0; [ "$status" -ne 0 ]   # no glob covers it
+    run fw_zone_glob_covering eth0; [ "$status" -ne 0 ]   # exact device, not a glob
+}
