@@ -151,15 +151,32 @@ esac
 
 # ---- site-to-site VPN subnets (design §4.5) --------------------------------
 # Each vpn_cidr is typically a remote peer's LAN that must ride the tunnel
-# (site-to-site). Assert that policy-marked traffic to it egresses the ACTIVE
-# tunnel, not WAN — passive `ip route get … mark` (read-only; honors the fwmark
-# rule -> table 200). Catches "added a VPN subnet but never ran apply, so it
-# isn't carried into the tunnel". Only meaningful while a VPN path is up; under
-# WAN/zapret the routing checks above already name the real cause.
+# (site-to-site). The real failure to catch is "added a VPN subnet but never ran
+# apply": the subnet is in UCI but not in the live nft VPN set, so its packets are
+# never marked. A forced `ip route get … mark` CANNOT see that gap — it just shows
+# where *already-marked* traffic goes, and table 200's default resolves through the
+# active tunnel regardless. So we check the marking precondition directly:
+#
+#   1. set membership — in blocklist/split the ONLY thing that marks a vpn_cidr is
+#      membership in the live VPN nft set (@VPN_SET). We test the network's address
+#      against the interval set with `nft get element` (normalization-proof: a
+#      contained host address matches the stored CIDR). `full` mode has a catch-all
+#      mark rule, so membership isn't load-bearing there — skip step 1.
+#   2. egress — once marked, traffic must leave via the ACTIVE tunnel, not WAN.
+#
+# Only meaningful while a VPN path is up; under WAN/zapret the routing checks above
+# already name the real cause.
 if [ "$PATH_KIND" = vpn ] && [ -n "$VPN_CIDRS" ] && [ -n "$ACTIVE" ]; then
     for _cidr in $(printf '%s' "$VPN_CIDRS" | tr ', ' '\n' | grep -v '^$'); do
         _addr="${_cidr%/*}"
         case "$_addr" in *.*.*.*) : ;; *) continue ;; esac
+        if [ "$MODE" != full ] \
+           && ! nft get element inet fw4 "$VPN_SET" "{ $_addr }" >/dev/null 2>&1; then
+            add FIXABLE routing \
+                "VPN subnet $_cidr (site-to-site) is missing from the live VPN set ($VPN_SET) — its traffic is never marked for the tunnel" \
+                "run wg-split-apply (rebuilds the VPN set + routes)"
+            continue
+        fi
         _dev="$(ip -4 route get "$_addr" mark "$WG_MARK" 2>/dev/null \
             | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
         [ -n "$_dev" ] || continue

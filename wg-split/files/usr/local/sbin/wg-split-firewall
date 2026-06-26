@@ -19,6 +19,12 @@ CMD="${1:-}"; IFACE="${2:-}"
 [ -n "$IFACE" ] || die "usage: wg-split-firewall {check|fix} <iface>"
 case "$CMD" in check|fix) : ;; *) die "usage: wg-split-firewall {check|fix} <iface>" ;; esac
 
+# Security gate: only ever operate on a CONFIGURED wg-split endpoint. `fix` adds
+# lan<->zone + zone->wan forwardings as root; without this, a caller (e.g. via the
+# ubus `action` method with the write ACL) could pass `wan` and open WAN->LAN.
+# Both check and fix are restricted so the tool can never touch a foreign iface.
+is_endpoint "$IFACE" || die "$IFACE is not a configured wg-split endpoint — refusing"
+
 # Resolve the WAN firewall zone name (the dest of the tunnel's egress forwarding):
 # the zone covering the 'wan' network, else the conventional 'wan'.
 wan_zone() { fw_zone_of_net wan 2>/dev/null || echo wan; }

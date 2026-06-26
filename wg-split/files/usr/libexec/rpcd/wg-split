@@ -51,8 +51,11 @@ case "$1" in
                     update_ru)      out="$(/usr/local/sbin/wg-split-update-ru 2>&1)";      code=$? ;;
                     update_domains) out="$(/usr/local/sbin/wg-split-update-domains 2>&1)"; code=$? ;;
                     fw_fix)
-                        # iface is passed as an argv (never shell-evaluated), but
-                        # validate it anyway — only an interface-name charset.
+                        # iface is passed as argv (never shell-evaluated); the
+                        # charset check is input hygiene only. The authoritative
+                        # guard is in wg-split-firewall, which refuses any iface
+                        # that isn't a configured wg-split endpoint (so a write-ACL
+                        # caller can't fix the firewall of, e.g., `wan`).
                         case "$iface" in
                             ''|*[!A-Za-z0-9_.-]*) out="invalid or missing iface"; code=2 ;;
                             *) out="$(/usr/local/sbin/wg-split-firewall fix "$iface" 2>&1)"; code=$? ;;

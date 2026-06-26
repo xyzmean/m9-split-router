@@ -108,6 +108,13 @@ endpoints_by_priority() {
 }
 # the single highest-priority iface (used as default/active fallback).
 top_endpoint() { endpoints_by_priority | awk '{print $1}'; }
+# True iff $1 is a configured wg-split endpoint iface. Used to gate privileged,
+# operator-invoked mutations (e.g. firewall-zone fixes) so they can only ever
+# touch wg-split's own tunnels — never an arbitrary iface like `wan`.
+is_endpoint() {
+    [ -n "$1" ] || return 1   # empty would match the gap between list entries
+    case " $(endpoints_by_priority) " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
 
 # ---- endpoint type dispatch (transport-agnostic seam; design §2.2) ----------
 # Every endpoint carries a `type` (default wg, covering wireguard+amneziawg). All

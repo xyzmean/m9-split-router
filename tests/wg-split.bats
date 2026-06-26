@@ -68,6 +68,7 @@ load_endpoint_helpers() {
     load_fn "$COMMON_SH" top_endpoint
     load_fn "$COMMON_SH" _ep_type_emit
     load_fn "$COMMON_SH" ep_type
+    load_fn "$COMMON_SH" is_endpoint
 }
 
 # Stub OpenWrt's config layer: config_foreach forwards extra args to the callback
@@ -103,4 +104,18 @@ config_get() { eval "$1=\"\${cfg_${2}_${3}:-$4}\""; }
     cfg_b_iface=sb0  cfg_b_priority=2 cfg_b_type=singbox
     [ "$(ep_type wg0)" = "wg" ]
     [ "$(ep_type sb0)" = "singbox" ]
+}
+
+# Security gate for privileged firewall fixes: only configured endpoints pass,
+# so the ubus action can never target a foreign iface like `wan`.
+@test "is_endpoint accepts configured ifaces and rejects foreign ones" {
+    load_endpoint_helpers
+    SECTIONS="a b"
+    cfg_a_iface=wg0  cfg_a_priority=1
+    cfg_b_iface=awg0 cfg_b_priority=2
+    run is_endpoint wg0;  [ "$status" -eq 0 ]
+    run is_endpoint awg0; [ "$status" -eq 0 ]
+    run is_endpoint wan;  [ "$status" -ne 0 ]
+    run is_endpoint "";   [ "$status" -ne 0 ]
+    run is_endpoint wg;   [ "$status" -ne 0 ]   # substring must not match
 }
