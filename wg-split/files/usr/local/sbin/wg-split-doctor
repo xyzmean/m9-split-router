@@ -105,12 +105,28 @@ for _if in $ORDERED; do
     rai_ok "$_if" || add FIXABLE endpoint "$_if: route_allowed_ips not 0 on a peer (would hijack main routes when brought up)" "run wg-split-apply (forces route_allowed_ips=0)"
     # firewall path (reuses fw_* helpers; these only warn — wg-split never edits fw)
     if _zone="$(fw_zone_of_net "$_if")"; then
-        if fw_zone_has_masq "$_zone"; then _masq=true; else
-            add FAIL firewall "$_if: zone '$_zone' has masquerading disabled" "enable masq on firewall zone '$_zone'"
-        fi
-        if [ -n "$LANZ" ]; then
-            if fw_has_forwarding "$LANZ" "$_zone"; then _fwd=true; else
-                add FAIL firewall "$_if: no forwarding '$LANZ' -> '$_zone' (fw4 will REJECT LAN->tunnel)" "add firewall forwarding src='$LANZ' dest='$_zone'"
+        if _role="$(fw_zone_is_shared "$_zone")"; then
+            # Endpoint shares the WAN/LAN zone. That zone may already carry masq +
+            # LAN->WAN forwarding, so the masq/fwd probes below would read "healthy" —
+            # but auto-fix REFUSES a shared zone (it can't add tunnel rules without
+            # opening the whole WAN/LAN). Flag it instead of reporting a false OK.
+            add FAIL firewall "$_if: is in the shared '$_zone' ($_role) firewall zone — auto-fix can't add tunnel masq/forwarding without opening the whole $_role zone" "give $_if its own firewall zone, then run: wg-split-firewall fix $_if"
+        else
+            if fw_zone_has_masq "$_zone"; then _masq=true; else
+                add FAIL firewall "$_if: zone '$_zone' has masquerading disabled" "enable masq on firewall zone '$_zone'"
+            fi
+            if [ -n "$LANZ" ]; then
+                if fw_has_forwarding "$LANZ" "$_zone"; then _fwd=true; else
+                    add FAIL firewall "$_if: no forwarding '$LANZ' -> '$_zone' (fw4 will REJECT LAN->tunnel)" "add firewall forwarding src='$LANZ' dest='$_zone'"
+                fi
+                # Site-to-site (vpn_cidr peers) also needs the REVERSE zone->LAN
+                # forwarding, or fw4 REJECTs remote-INITIATED traffic to the LAN while
+                # the firewall otherwise looks healthy — exactly what wg-split-firewall
+                # fix establishes. Only relevant with vpn_cidr set: plain outbound
+                # replies ride conntrack ESTABLISHED and need no reverse rule.
+                if [ -n "$VPN_CIDRS" ] && ! fw_has_forwarding "$_zone" "$LANZ"; then
+                    add FAIL firewall "$_if: no reverse forwarding '$_zone' -> '$LANZ' (fw4 will REJECT remote-initiated site-to-site traffic to LAN)" "wg-split-firewall fix $_if"
+                fi
             fi
         fi
     else

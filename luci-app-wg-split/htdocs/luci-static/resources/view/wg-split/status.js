@@ -165,7 +165,7 @@ function heroCard(d) {
 // Routing chain LAN → [endpoint #1..#N] → (zapret) → WAN, live hop highlighted,
 // live rate shown on the active endpoint. Generic "endpoint" labels (no hardcoded
 // "WireGuard"/"handshake") so a future sing-box transport reads the same.
-function chainViz(d, now) {
+function chainViz(d, rates) {
 	var s = d.summary || {};
 	var state = s.state || '';
 	var nodes = [];
@@ -185,7 +185,7 @@ function chainViz(d, now) {
 		var cls = active ? 'wgs-node-active' : (e.present ? '' : 'wgs-node-dead');
 		var sub;
 		if (!e.present) sub = _('down');
-		else if (active) sub = rateLabel(ratesFor(e, now));
+		else if (active) sub = rateLabel(rates[e.iface] || { rx: 0, tx: 0 });
 		else sub = (e.handshake_age >= 0 ? '⇄ ' + fmtAge(e.handshake_age) : '');
 		nodes.push(arrow());
 		nodes.push(node('#' + (e.priority || '?') + ' ' + e.iface, sub, cls));
@@ -281,6 +281,11 @@ function statusPanel(wgIfaces) {
 
 	function render(d, events) {
 		var now = Date.now();
+		// Sample each endpoint's rate ONCE per refresh: ratesFor() advances prevTx as
+		// a side effect, so calling it again in the same render (table + chain) would
+		// see Δt=0 and report 0. Cache here and reuse for both views.
+		var rates = {};
+		(d.endpoints || []).forEach(function (e) { rates[e.iface] = ratesFor(e, now); });
 		var fr = firstRun(d);
 
 		var epRows = [ E('tr', { 'class': 'tr table-titles' }, [
@@ -290,7 +295,7 @@ function statusPanel(wgIfaces) {
 			E('th', { 'class': 'th' }, _('Masq')), E('th', { 'class': 'th' }, _('LAN fwd'))
 		]) ];
 		(d.endpoints || []).forEach(function (e) {
-			var r = ratesFor(e, now);
+			var r = rates[e.iface] || { rx: 0, tx: 0 };
 			epRows.push(E('tr', { 'class': 'tr' }, [
 				E('td', { 'class': 'td' }, e.present ? e.iface : E('span', { 'style': 'color:' + SEV.FAIL }, e.iface + ' ' + _('(missing)'))),
 				E('td', { 'class': 'td' }, e.priority || '—'),
@@ -341,7 +346,7 @@ function statusPanel(wgIfaces) {
 		body.replaceChildren(
 			heroCard(d),
 			fr || '',
-			chainViz(d, now),
+			chainViz(d, rates),
 			E('h4', _('Failover tunnels')), E('table', { 'class': 'table' }, epRows),
 			E('h4', _('Lists')), E('table', { 'class': 'table' }, listRows),
 			E('h4', _('Diagnostics')), checkNodes,
@@ -354,7 +359,11 @@ function statusPanel(wgIfaces) {
 	// ("<iface>: …") which doctor always emits for firewall checks.
 	function fixButton(c) {
 		if (c.category !== 'firewall') return null;
-		var m = /^([A-Za-z0-9_.-]+):/.exec(c.message || '');
+		// The shared WAN/LAN-zone finding is NOT auto-fixable — wg-split-firewall
+			// refuses to touch a shared zone — so don't offer a button that can only
+			// fail; the "Firewall settings" link guides manual remediation instead.
+			if (/in the shared /.test(c.message || '')) return null;
+			var m = /^([A-Za-z0-9_.-]+):/.exec(c.message || '');
 		if (!m) return null;
 		var iface = m[1];
 		return E('button', {

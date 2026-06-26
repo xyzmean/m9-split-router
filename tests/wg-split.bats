@@ -119,3 +119,35 @@ config_get() { eval "$1=\"\${cfg_${2}_${3}:-$4}\""; }
     run is_endpoint "";   [ "$status" -ne 0 ]
     run is_endpoint wg;   [ "$status" -ne 0 ]   # substring must not match
 }
+
+# Second privileged-firewall gate: even a name in wg-split UCI must be a REAL
+# wireguard/amneziawg interface, so a write-ACL caller can't add `guest` as an
+# endpoint and fw_fix its zone.
+@test "iface_is_wg accepts wireguard/amneziawg proto, rejects others" {
+    load_fn "$COMMON_SH" iface_is_wg
+    # stub `uci -q get network.<iface>.proto` (args: -q get network.X.proto)
+    uci() {
+        case "$3" in
+            network.wg0.proto)  echo wireguard ;;
+            network.awg0.proto) echo amneziawg ;;
+            network.wan.proto)  echo dhcp ;;
+            *) echo "" ;;
+        esac
+    }
+    run iface_is_wg wg0;   [ "$status" -eq 0 ]
+    run iface_is_wg awg0;  [ "$status" -eq 0 ]
+    run iface_is_wg wan;   [ "$status" -ne 0 ]
+    run iface_is_wg guest; [ "$status" -ne 0 ]
+}
+
+# Shared-zone guard: a tunnel sharing the WAN/LAN zone must be refused by fix and
+# flagged by the doctor (not silently reported healthy).
+@test "fw_zone_is_shared flags WAN/LAN zones, passes a dedicated tunnel zone" {
+    load_fn "$COMMON_SH" fw_zone_is_shared
+    fw_wan_zone() { echo wan; }
+    fw_lan_zone() { echo lan; }
+    run fw_zone_is_shared wan;  [ "$status" -eq 0 ]; [ "$output" = WAN ]
+    run fw_zone_is_shared lan;  [ "$status" -eq 0 ]; [ "$output" = LAN ]
+    run fw_zone_is_shared wg0;  [ "$status" -ne 0 ]
+    run fw_zone_is_shared "";   [ "$status" -ne 0 ]
+}

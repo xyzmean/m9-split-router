@@ -6,6 +6,7 @@
 			"ubus": {
 				"network.interface": [ "dump" ],
 				"network": [ "get_proto_handlers" ],
+				"luci-rpc": [ "getHostHints" ],
 				"wg-split": [ "status", "events" ]
 			}
 		},

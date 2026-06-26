@@ -24,21 +24,16 @@ case "$CMD" in check|fix) : ;; *) die "usage: wg-split-firewall {check|fix} <ifa
 # ubus `action` method with the write ACL) could pass `wan` and open WAN->LAN.
 # Both check and fix are restricted so the tool can never touch a foreign iface.
 is_endpoint "$IFACE" || die "$IFACE is not a configured wg-split endpoint — refusing"
+# Second gate: the endpoint must be a REAL WireGuard/AmneziaWG interface, not just
+# a name in wg-split's UCI. A write-ACL caller could add an arbitrary iface (e.g.
+# `guest`, already in its own zone) as an endpoint section and then fw_fix it,
+# adding masq + guest->lan/wan forwarding to that foreign zone. Requiring the
+# tunnel proto stops firewall mutation from ever reaching a non-tunnel network.
+iface_is_wg "$IFACE" || die "$IFACE is not a WireGuard/AmneziaWG interface — refusing to modify its firewall zone"
 
-# Resolve the WAN firewall zone name (the dest of the tunnel's egress forwarding):
-# the zone covering the 'wan' network, else the conventional 'wan'.
-wan_zone() { fw_zone_of_net wan 2>/dev/null || echo wan; }
-
-# Refuse to touch a SHARED infrastructure zone. If the endpoint was placed in the
-# same firewall zone as WAN (or LAN), zone == wan/lan and adding masq + reverse
-# (zone->lan) forwarding would open the ENTIRE WAN/LAN zone, not just the tunnel.
-# Echoes the role ("WAN"/"LAN") and returns 0 when $1 is such a shared zone.
-zone_is_shared() {  # zone-name
-    [ -n "$1" ] || return 1
-    [ "$1" = "$(wan_zone)" ]    && { echo WAN; return 0; }
-    [ "$1" = "$(fw_lan_zone)" ] && { echo LAN; return 0; }
-    return 1
-}
+# fw_wan_zone (zone covering 'wan', else conventional 'wan') and fw_zone_is_shared
+# (refuse to touch the WAN/LAN zone — fixing it would open the whole infra zone,
+# not just the tunnel) live in common.sh so the doctor reuses the same logic.
 
 # ---- check -----------------------------------------------------------------
 check_iface() {
@@ -48,7 +43,7 @@ check_iface() {
         echo "zone        : MISSING ($IFACE is in no firewall zone)"
         return 1
     fi
-    if _role="$(zone_is_shared "$_z")"; then
+    if _role="$(fw_zone_is_shared "$_z")"; then
         echo "zone        : SHARED ($_z is your $_role zone — give $IFACE its own firewall zone; fix refuses to modify a shared zone)"
         return 1
     fi
@@ -65,7 +60,7 @@ check_iface() {
         if fw_has_forwarding "$_z" "$_lz"; then echo "fwd ep->lan : $_z -> $_lz"
         else echo "fwd ep->lan : MISSING ($_z -> $_lz)"; _miss="$_miss fwd-eplan"; fi
     fi
-    _wz="$(wan_zone)"
+    _wz="$(fw_wan_zone)"
     if fw_has_forwarding "$_z" "$_wz"; then echo "fwd ep->wan : $_z -> $_wz"
     else echo "fwd ep->wan : MISSING ($_z -> $_wz)"; _miss="$_miss fwd-wan"; fi
     [ -z "$_miss" ] && { echo "OK: firewall complete for $IFACE"; return 0; }
@@ -105,7 +100,7 @@ ensure_masq() {  # zone-name
 # ---- fix -------------------------------------------------------------------
 fix_iface() {
     ZONE="$(fw_zone_of_net "$IFACE" 2>/dev/null)" || ZONE=""
-    if _role="$(zone_is_shared "$ZONE")"; then
+    if _role="$(fw_zone_is_shared "$ZONE")"; then
         die "$IFACE is in the shared '$ZONE' ($_role) firewall zone; give the tunnel its own zone before fixing — refusing to add masq/forwarding to a shared zone"
     fi
     if [ -z "$ZONE" ]; then
@@ -127,7 +122,7 @@ fix_iface() {
     fi
 
     _lz="$(fw_lan_zone)"
-    _wz="$(wan_zone)"
+    _wz="$(fw_wan_zone)"
     # lan<->zone (both directions so site-to-site replies from the remote LAN reach
     # local clients) and zone->wan (tunnel transport / DoH egress).
     if [ -n "$_lz" ]; then add_forwarding "$_lz" "$ZONE"; add_forwarding "$ZONE" "$_lz"; fi

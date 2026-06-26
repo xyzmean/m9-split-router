@@ -115,6 +115,19 @@ is_endpoint() {
     [ -n "$1" ] || return 1   # empty would match the gap between list entries
     case " $(endpoints_by_priority) " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
+# True iff $1 is an actual WireGuard/AmneziaWG interface in /etc/config/network.
+# A SECOND gate for privileged firewall mutation: is_endpoint only proves a name
+# appears in wg-split's UCI, but a caller holding the wg-split write ACL could add
+# an arbitrary iface (e.g. `guest`, already in its own firewall zone) as an
+# endpoint section and then fw_fix it. Requiring a real tunnel proto confines
+# masq/forwarding fixes to genuine tunnels — they can never be pointed at a
+# foreign zone. (2.0.0 ships only the `wg` transport; sing-box lands in 3.0.)
+iface_is_wg() {
+    case "$(uci -q get "network.$1.proto" 2>/dev/null)" in
+        wireguard|amneziawg) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # ---- endpoint type dispatch (transport-agnostic seam; design §2.2) ----------
 # Every endpoint carries a `type` (default wg, covering wireguard+amneziawg). All
@@ -363,6 +376,22 @@ fw_lan_zone() {
     done
     _lz="$(fw_zone_of_net "$LAN_IFACE")" && { echo "$_lz"; return 0; }
     _lz="$(fw_zone_of_net lan)"          && { echo "$_lz"; return 0; }
+    return 1
+}
+
+# WAN firewall zone name: the zone covering the 'wan' network, else the
+# conventional 'wan'. The dest of the tunnel's egress forwarding.
+fw_wan_zone() { fw_zone_of_net wan 2>/dev/null || echo wan; }
+
+# Is zone $1 a SHARED infrastructure zone — the WAN or LAN zone? Echoes the role
+# ("WAN"/"LAN") and returns 0 if so. A wg-split endpoint placed in such a zone
+# must NOT get masq / reverse-forwarding fixes: that would open the ENTIRE WAN/LAN
+# zone, not just the tunnel. Used by wg-split-firewall (refuse to touch it) and by
+# the doctor (flag it instead of reporting the shared zone's state as healthy).
+fw_zone_is_shared() {  # zone-name
+    [ -n "$1" ] || return 1
+    [ "$1" = "$(fw_wan_zone)" ] && { echo WAN; return 0; }
+    [ "$1" = "$(fw_lan_zone)" ] && { echo LAN; return 0; }
     return 1
 }
 
