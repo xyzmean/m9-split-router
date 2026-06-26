@@ -29,8 +29,12 @@ case "$1" in
     call)
         case "$2" in
             status)
-                # already a JSON object — emit verbatim
-                "$DOCTOR" --json
+                # already a JSON object — emit verbatim. doctor exits with the
+                # worst severity (non-zero on any WARN/FIXABLE/FAIL) BY DESIGN for
+                # CLI use; but a non-zero rpcd handler makes LuCI's callStatus()
+                # reject exactly when there's a problem to render. Normalize to 0 —
+                # the JSON itself carries the severity. (CLI exit code unchanged.)
+                "$DOCTOR" --json || true
                 ;;
             events)
                 # doctor emits a bare array; wrap it so the ubus reply is an object

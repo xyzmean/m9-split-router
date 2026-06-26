@@ -136,9 +136,12 @@ fix_iface() {
         # wg-split-apply, which reloads fw4 AND re-runs its repopulation follow-up
         # (regenerate ruleset, restart dnsmasq, run failover). Fall back to a plain
         # reload only if apply is somehow unavailable.
-        if [ -x /usr/local/sbin/wg-split-apply ]; then
-            wg-split-apply >/dev/null 2>&1 || true
+        if [ -x /usr/local/sbin/wg-split-apply ] \
+           && /usr/local/sbin/wg-split-apply >/dev/null 2>&1; then
+            :   # apply reloaded fw4 and repopulated the sets
         else
+            # apply missing or failed (e.g. PATH/env) — at least reload the firewall
+            # so the committed zone/forwarding takes effect.
             fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
         fi
         log "firewall: applied zone/forwarding for $IFACE (zone=$ZONE lan=${_lz:-?} wan=$_wz); re-applied policy"
