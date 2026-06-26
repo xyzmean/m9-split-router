@@ -128,6 +128,20 @@ iface_is_wg() {
         *) return 1 ;;
     esac
 }
+# The L3 device a network section binds to: its explicit `device` option, else the
+# section name (wg/awg sections name the kernel device after the section).
+iface_l3dev() { _d="$(uci -q get "network.$1.device" 2>/dev/null)"; [ -n "$_d" ] && echo "$_d" || echo "$1"; }
+# True iff L3 device $1 is the device of some WireGuard/AmneziaWG network section.
+# Lets the zone helpers recognise a firewall zone that lists a tunnel by its exact
+# device (`list device 'wg0'`) rather than by network name.
+device_is_wg() {  # device
+    [ -n "$1" ] || return 1
+    for _dw in $(uci show network 2>/dev/null | sed -n 's/^network\.\([^.=]*\)=interface$/\1/p'); do
+        iface_is_wg "$_dw" || continue
+        [ "$(iface_l3dev "$_dw")" = "$1" ] && return 0
+    done
+    return 1
+}
 
 # ---- endpoint type dispatch (transport-agnostic seam; design §2.2) ----------
 # Every endpoint carries a `type` (default wg, covering wireguard+amneziawg). All
@@ -351,6 +365,38 @@ fw_zone_has_masq() {
     return 1
 }
 
+# Is MSS clamping (mtu_fix) enabled on the (active) zone named $1? fw4 bool. Off
+# (or unset) stalls large packets on low-MTU wg/PPPoE paths.
+fw_zone_has_mtu_fix() {
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ] \
+           && fw_sec_active "@zone[$_fz]"; then
+            fw_bool "$(uci -q get "firewall.@zone[$_fz].mtu_fix" 2>/dev/null)"
+            return
+        fi
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
+# Are zone $1's input/output/forward policies all ACCEPT? The reference tunnel zone
+# is accept-all; a REJECT/DROP (or unset -> restrictive fw4 default) input/forward
+# blocks router-originated tunnel probes and site-to-site / intra-zone traffic.
+fw_zone_policies_open() {  # zone-name
+    _fz=0
+    while [ -n "$(uci -q get "firewall.@zone[$_fz]" 2>/dev/null)" ]; do
+        if [ "$(uci -q get "firewall.@zone[$_fz].name" 2>/dev/null)" = "$1" ]; then
+            for _fp in input output forward; do
+                [ "$(uci -q get "firewall.@zone[$_fz].$_fp" 2>/dev/null)" = "ACCEPT" ] || return 1
+            done
+            return 0
+        fi
+        _fz=$((_fz + 1))
+    done
+    return 1
+}
+
 # Is there an active (enabled, IPv4) firewall forwarding src zone $1 -> dest $2?
 fw_has_forwarding() {
     _ff=0
@@ -410,7 +456,12 @@ fw_zone_is_tunnel_only() {  # zone-name
             for _ztn in $(uci -q get "firewall.@zone[$_zt].network" 2>/dev/null); do
                 iface_is_wg "$_ztn" || return 1
             done
-            [ -n "$(uci -q get "firewall.@zone[$_zt].device" 2>/dev/null)" ] && return 1
+            for _ztd in $(uci -q get "firewall.@zone[$_zt].device" 2>/dev/null); do
+                # an exact device that IS a tunnel's L3 device qualifies; a glob (or
+                # any non-tunnel device) can't be proven tunnel-only -> reject.
+                case "$_ztd" in *[*+?]*) return 1 ;; esac
+                device_is_wg "$_ztd" || return 1
+            done
         fi
         _zt=$((_zt + 1))
     done
@@ -424,6 +475,7 @@ fw_zone_is_tunnel_only() {  # zone-name
 # already covers. Only trailing-wildcard device patterns are recognised.
 fw_zone_glob_covering() {  # iface
     [ -n "$1" ] || return 1
+    _gdev="$(iface_l3dev "$1")"   # resolve the endpoint's L3 device too (it may differ from the section name)
     _zg=0
     while [ -n "$(uci -q get "firewall.@zone[$_zg]" 2>/dev/null)" ]; do
         if fw_sec_active "@zone[$_zg]"; then
@@ -431,7 +483,8 @@ fw_zone_glob_covering() {  # iface
                 case "$_zgd" in
                     *[*+])
                         _zgp="${_zgd%[*+]}"
-                        case "$1" in "$_zgp"*) uci -q get "firewall.@zone[$_zg].name"; return 0 ;; esac ;;
+                        case "$1"     in "$_zgp"*) uci -q get "firewall.@zone[$_zg].name"; return 0 ;; esac
+                        case "$_gdev" in "$_zgp"*) uci -q get "firewall.@zone[$_zg].name"; return 0 ;; esac ;;
                 esac
             done
         fi

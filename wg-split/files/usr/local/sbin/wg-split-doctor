@@ -111,21 +111,27 @@ for _if in $ORDERED; do
             # but auto-fix REFUSES a shared zone (it can't add tunnel rules without
             # opening the whole WAN/LAN). Flag it instead of reporting a false OK.
             add FAIL firewall "$_if: is in the shared '$_zone' ($_role) firewall zone — auto-fix can't add tunnel masq/forwarding without opening the whole $_role zone" "give $_if its own firewall zone, then run: wg-split-firewall fix $_if"
+        elif ! fw_zone_is_tunnel_only "$_zone"; then
+            # Zone also holds non-tunnel networks. masq + LAN->zone fwd may already be
+            # present (read "healthy"), but auto-fix REFUSES a mixed zone — and the
+            # reverse zone->LAN it would otherwise add is withheld, so site-to-site
+            # inbound stays rejected. Flag it as the real, manual remediation.
+            add FAIL firewall "$_if: shares firewall zone '$_zone' with non-tunnel networks — auto-fix refuses to change a mixed zone's masq/forwarding/policy (site-to-site inbound stays rejected)" "give $_if its own firewall zone, then run: wg-split-firewall fix $_if"
         else
             if fw_zone_has_masq "$_zone"; then _masq=true; else
                 add FAIL firewall "$_if: zone '$_zone' has masquerading disabled" "enable masq on firewall zone '$_zone'"
             fi
+            fw_zone_has_mtu_fix "$_zone" || add FIXABLE firewall "$_if: MSS clamping (mtu_fix) disabled on zone '$_zone' — large packets stall on low-MTU tunnels" "wg-split-firewall fix $_if"
+            fw_zone_policies_open "$_zone" || add FAIL firewall "$_if: zone '$_zone' has a non-ACCEPT input/output/forward policy — blocks router-originated probes and site-to-site/intra-zone traffic" "wg-split-firewall fix $_if"
             if [ -n "$LANZ" ]; then
                 if fw_has_forwarding "$LANZ" "$_zone"; then _fwd=true; else
                     add FAIL firewall "$_if: no forwarding '$LANZ' -> '$_zone' (fw4 will REJECT LAN->tunnel)" "add firewall forwarding src='$LANZ' dest='$_zone'"
                 fi
-                # Site-to-site (vpn_cidr peers) also needs the REVERSE zone->LAN
-                # forwarding, or fw4 REJECTs remote-INITIATED traffic to the LAN while
-                # the firewall otherwise looks healthy — exactly what wg-split-firewall
-                # fix establishes. Only relevant with vpn_cidr set: plain outbound
-                # replies ride conntrack ESTABLISHED and need no reverse rule.
-                if [ -n "$VPN_CIDRS" ] && fw_zone_is_tunnel_only "$_zone" \
-                   && ! fw_has_forwarding "$_zone" "$LANZ"; then
+                # Zone is tunnel-only here, so the reverse zone->LAN forwarding is safe
+                # and the fix always adds it. Site-to-site (vpn_cidr) needs it or fw4
+                # REJECTs remote-INITIATED traffic to LAN; plain outbound replies ride
+                # conntrack ESTABLISHED, so only demand it when vpn_cidr is set.
+                if [ -n "$VPN_CIDRS" ] && ! fw_has_forwarding "$_zone" "$LANZ"; then
                     add FAIL firewall "$_if: no reverse forwarding '$_zone' -> '$LANZ' (fw4 will REJECT remote-initiated site-to-site traffic to LAN)" "wg-split-firewall fix $_if"
                 fi
             fi

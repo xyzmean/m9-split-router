@@ -363,7 +363,7 @@ function statusPanel(wgIfaces) {
 			// iface already covered by a device-wildcard zone — wg-split-firewall refuses
 			// both. Don't offer a button that can only fail; the "Firewall settings" link
 			// guides manual remediation instead.
-			if (/in the shared |device wildcard/.test(c.message || '')) return null;
+			if (/in the shared |device wildcard|non-tunnel networks/.test(c.message || '')) return null;
 			var m = /^([A-Za-z0-9_.-]+):/.exec(c.message || '');
 		if (!m) return null;
 		var iface = m[1];
