@@ -194,4 +194,4 @@ fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || tru
 /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 [ -x /usr/local/sbin/wg-split-failover ] && /usr/local/sbin/wg-split-failover >/dev/null 2>&1 || true
 
-log "applied: mode=$MODE ipsum=$IPSUM_ENABLED zapret=$ZAPRET_ENABLED kill=$KILLSWITCH vpn_cidrs=$(echo $VPN_CIDRS | wc -w) direct_cidrs=$(echo $DIRECT_CIDRS | wc -w)"
+log "applied: mode=$MODE ipsum=$IPSUM_ENABLED zapret=$ZAPRET_ENABLED kill=$KILLSWITCH vpn_cidrs=$(echo "$VPN_CIDRS" | wc -w) direct_cidrs=$(echo "$DIRECT_CIDRS" | wc -w)"

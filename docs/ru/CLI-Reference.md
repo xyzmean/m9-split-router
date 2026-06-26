@@ -6,7 +6,8 @@
 
 | Команда | Назначение |
 |---------|-----------|
-| `wg-split-doctor` | структурированная диагностика (текст; `--json` для LuCI/инструментов) |
+| `wg-split-doctor` | структурированная диагностика (текст; `--json` для LuCI; `--events` — JSON-журнал failover) |
+| `wg-split-firewall {check\|fix} <iface>` | проверить/починить firewall-зону туннеля (зона + masq + forwarding lan↔туннель↔wan) |
 | `wg-split-status` | компактный снимок рантайма |
 | `wg-split-apply` | регенерировать nft/dnsmasq-слой из UCI и переустановить маршруты |
 | `wg-split-failover` | один проход failover (`--daemon` — цикл, это и есть служба) |
@@ -27,6 +28,9 @@
 | `/usr/local/sbin/wg-split-failover` | машина состояний failover + демон procd |
 | `/usr/local/sbin/wg-split-doctor` | диагностика (текст + `--json`) |
 | `/usr/local/sbin/wg-split-apply` | регенерация nft/dnsmasq-слоя из UCI |
+| `/usr/local/sbin/wg-split-firewall` | создание/починка firewall-зоны туннеля |
+| `/usr/libexec/rpcd/wg-split` | ubus-объект `wg-split` (status/events/action) для LuCI |
+| `/var/run/wg-split-events` | RAM-журнал событий failover (таймлайн) |
 | `/usr/local/sbin/wg-split-update-{ipsum,ru,domains}` | загрузчики списков |
 | `/usr/local/sbin/wg-split-sync-nozapret` | пересборка bypass-сета zapret |
 | `/usr/local/lib/wg-split/common.sh` | общие хелперы (загружают UCI) |

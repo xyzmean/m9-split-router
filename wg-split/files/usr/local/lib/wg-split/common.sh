@@ -109,6 +109,49 @@ endpoints_by_priority() {
 # the single highest-priority iface (used as default/active fallback).
 top_endpoint() { endpoints_by_priority | awk '{print $1}'; }
 
+# ---- endpoint type dispatch (transport-agnostic seam; design §2.2) ----------
+# Every endpoint carries a `type` (default wg, covering wireguard+amneziawg). All
+# type-specific logic funnels through these narrow helpers so 3.0.0 can add a
+# sing-box (vless/hysteria) backend without touching failover/doctor/ubus/UI.
+# 2.0.0 implements only `wg`; an unknown/future type falls back to wg behavior so
+# an existing config can never silently break. (`wg|*)` = "wg, and anything not
+# yet implemented behaves as wg".)
+_ep_type_emit() {  # $1=section $2=wanted iface — print type if it matches
+    config_get _ete_i "$1" iface ''
+    [ "$_ete_i" = "$2" ] || return 0
+    config_get _ete_t "$1" type 'wg'; [ -n "$_ete_t" ] || _ete_t=wg
+    printf '%s\n' "$_ete_t"
+}
+ep_type() { config_foreach _ep_type_emit endpoint "$1" | head -1; }
+
+# Is there a live egress device for this endpoint? (wg = kernel link present)
+ep_present() { case "$(ep_type "$1")" in wg|*) iface_present "$1" ;; esac; }
+# L3 device for `ip route … dev` (wg = the iface itself).
+ep_egress_dev() { case "$(ep_type "$1")" in wg|*) echo "$1" ;; esac; }
+# Liveness age in seconds, smaller = healthier (wg = handshake age; 999999 down).
+ep_liveness() { case "$(ep_type "$1")" in wg|*) wg_handshake_age "$1" ;; esac; }
+# rx/tx cumulative bytes — echoes "rx tx" (wg = summed `wg show transfer`).
+ep_transfer() {
+    case "$(ep_type "$1")" in
+        wg|*) wgshow "$1" transfer \
+            | awk '{rx+=$2; tx+=$3} END{printf "%d %d", rx+0, tx+0}' ;;
+    esac
+}
+# Bring an endpoint up / restart it (wg = ifup / ifdown+ifup). Callers that need
+# to wait for liveness do so themselves (failover's wait_handshake).
+ep_bringup() {
+    case "$(ep_type "$1")" in
+        wg|*) ifup "$1" >/dev/null 2>&1 \
+            || /etc/init.d/network reload >/dev/null 2>&1 || true ;;
+    esac
+}
+ep_restart() {
+    case "$(ep_type "$1")" in
+        wg|*) ifdown "$1" >/dev/null 2>&1 || true
+              ifup "$1" >/dev/null 2>&1 || true ;;
+    esac
+}
+
 # ---- active-path state -----------------------------------------------------
 # State file holds the live path: "vpn:<iface>" | "zapret" | "wan".
 read_state()  { cat "$STATE_FILE" 2>/dev/null || true; }
@@ -205,6 +248,20 @@ fail_inc() {
 }
 fail_reset() { echo 0 > "$FAIL_COUNTER_FILE"; }
 fail_get()   { cat "$FAIL_COUNTER_FILE" 2>/dev/null || echo 0; }
+
+# ---- failover event journal (RAM ring buffer; backs the LuCI timeline) ------
+# Append "ts<TAB>kind<TAB>from<TAB>to<TAB>reason" to a tmpfs file (/var/run — no
+# flash wear), trimmed to the last EVENTS_MAX lines. kind ∈ switch | recover |
+# restart | killswitch | zapret_fallback | wan_fallback. Read back as JSON by
+# `wg-split-doctor --events`. Best-effort: a failed write never breaks failover.
+EVENTS_FILE="/var/run/wg-split-events"
+EVENTS_MAX="200"
+journal() {  # kind [from] [to] [reason]
+    { printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(date +%s)" "$1" "${2:-}" "${3:-}" "${4:-}" >> "$EVENTS_FILE"; } 2>/dev/null || return 0
+    _je="$(tail -n "$EVENTS_MAX" "$EVENTS_FILE" 2>/dev/null)" \
+        && printf '%s\n' "$_je" > "$EVENTS_FILE" 2>/dev/null || true
+}
 
 # ---- firewall sanity (query helpers) ---------------------------------------
 # wg-split owns ROUTING (marks + table 200) but never touches the firewall — a

@@ -36,7 +36,7 @@ Build/Compile:=
 define Package/wg-split/install
 	$(INSTALL_DIR) $(1)
 	$(CP) ./files/* $(1)/
-	chmod 0755 $(1)/usr/local/sbin/wg-split-* $(1)/etc/init.d/wg-split
+	chmod 0755 $(1)/usr/local/sbin/wg-split-* $(1)/etc/init.d/wg-split $(1)/usr/libexec/rpcd/wg-split
 endef
 
 define Package/wg-split/postinst
@@ -50,6 +50,8 @@ grep -q 'wg-split-update-domains' "$$CRON" || echo '50 4 * * * /usr/local/sbin/w
 /etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
 /etc/init.d/wg-split enable >/dev/null 2>&1
 /etc/init.d/wg-split restart >/dev/null 2>&1
+# register the wg-split ubus object (rpcd plugin) so LuCI can call it
+/etc/init.d/rpcd reload >/dev/null 2>&1
 # first list fetch in the background so the install returns promptly
 ( /usr/local/sbin/wg-split-update-ipsum; /usr/local/sbin/wg-split-update-ru; /usr/local/sbin/wg-split-update-domains ) >/dev/null 2>&1 &
 exit 0

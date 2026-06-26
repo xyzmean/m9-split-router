@@ -14,7 +14,8 @@
 # Almost every probe reuses a common.sh helper — this file is orchestration, not
 # new diagnostic logic. No `set -u`: OpenWrt's config_* helpers aren't nounset-safe.
 
-JSON=0; [ "${1:-}" = "--json" ] && JSON=1
+JSON=0; EVENTS=0
+case "${1:-}" in --json) JSON=1 ;; --events) EVENTS=1 ;; esac
 
 # ---- result accumulators ---------------------------------------------------
 # checks: one record per line, tab-separated SEV<TAB>CATEGORY<TAB>MSG<TAB>FIX.
@@ -40,6 +41,23 @@ fi
 
 . /usr/local/lib/wg-split/common.sh
 
+# ---- failover event timeline (design §4.3) ---------------------------------
+# `wg-split-doctor --events` -> JSON array of the RAM ring buffer journal()
+# writes, newest first. Consumed by the LuCI dashboard timeline.
+if [ "$EVENTS" = 1 ]; then
+    printf '['
+    { [ -s "$EVENTS_FILE" ] && sed '1!G;h;$!d' "$EVENTS_FILE"; } \
+    | { _first=1
+        while IFS="$(printf '\t')" read -r _ts _kind _from _to _reason; do
+            [ -n "$_ts" ] || continue
+            [ "$_first" = 1 ] && _first=0 || printf ','
+            printf '{"ts":%s,"kind":"%s","from":"%s","to":"%s","reason":"%s"}' \
+                "$_ts" "$(json_esc "$_kind")" "$(json_esc "$_from")" "$(json_esc "$_to")" "$(json_esc "$_reason")"
+        done; }
+    printf ']\n'
+    exit 0
+fi
+
 STATE="$(read_state)"; ACTIVE="$(active_iface)"; ORDERED="$(endpoints_by_priority)"
 case "$STATE" in vpn:*) PATH_KIND=vpn;; killswitch) PATH_KIND=killswitch;; zapret) PATH_KIND=zapret;; *) PATH_KIND=wan;; esac
 
@@ -60,15 +78,18 @@ prio_of() { config_foreach _collect_endpoint endpoint | awk -v i="$1" '$2==i{pri
 
 LANZ="$(fw_lan_zone)"
 for _if in $ORDERED; do
-    _present=false; _hs=-1; _health=skip; _zone=""; _masq=false; _fwd=false
+    _present=false; _hs=-1; _health=skip; _zone=""; _masq=false; _fwd=false; _rx=0; _tx=0
     if iface_present "$_if"; then
         _present=true
+        # cumulative rx/tx bytes (UI derives live speed between polls); design §4.1
+        _rxtx="$(ep_transfer "$_if")"; _rx="${_rxtx%% *}"; _tx="${_rxtx##* }"
+        [ -n "$_rx" ] || _rx=0; [ -n "$_tx" ] || _tx=0
         # PASSIVE health only — the doctor never probes (that mutates routing and
         # must stay out of the read-only LuCI path). Derive from handshake age, a
         # pure `wg show` read: fresh = ok, stale = idle (not "failed" — we didn't
         # test it; the failover daemon is the authoritative prober). The active
         # path in the summary already names the daemon-confirmed live tunnel.
-        _hs="$(wg_handshake_age "$_if")"
+        _hs="$(ep_liveness "$_if")"
         if [ "$_hs" -lt 180 ] 2>/dev/null; then _health=ok; else _health=idle; fi
     elif [ -n "$(uci -q get "network.$_if" 2>/dev/null)" ]; then
         # configured in /etc/config/network but the kernel link is gone (stopped /
@@ -95,7 +116,7 @@ for _if in $ORDERED; do
     else
         add FAIL firewall "$_if: not in any firewall zone (fw4 will REJECT LAN->tunnel)" "add '$_if' to a firewall zone with masq=1"
     fi
-    EP_JSON="$EP_JSON{\"iface\":\"$(json_esc "$_if")\",\"priority\":\"$(json_esc "$(prio_of "$_if")")\",\"present\":$_present,\"handshake_age\":$_hs,\"health\":\"$_health\",\"zone\":\"$(json_esc "$_zone")\",\"masq\":$_masq,\"forwarding\":$_fwd},"
+    EP_JSON="$EP_JSON{\"iface\":\"$(json_esc "$_if")\",\"type\":\"$(json_esc "$(ep_type "$_if")")\",\"priority\":\"$(json_esc "$(prio_of "$_if")")\",\"present\":$_present,\"handshake_age\":$_hs,\"rx\":$_rx,\"tx\":$_tx,\"health\":\"$_health\",\"zone\":\"$(json_esc "$_zone")\",\"masq\":$_masq,\"forwarding\":$_fwd},"
 done
 
 # ---- routing / killswitch --------------------------------------------------
@@ -127,6 +148,26 @@ case "$PATH_KIND" in
         fi
         [ -n "$T200" ] && add WARN routing "active path is WAN/zapret but table $WG_TABLE still holds routes" "stale; clears on next failover tick" ;;
 esac
+
+# ---- site-to-site VPN subnets (design §4.5) --------------------------------
+# Each vpn_cidr is typically a remote peer's LAN that must ride the tunnel
+# (site-to-site). Assert that policy-marked traffic to it egresses the ACTIVE
+# tunnel, not WAN — passive `ip route get … mark` (read-only; honors the fwmark
+# rule -> table 200). Catches "added a VPN subnet but never ran apply, so it
+# isn't carried into the tunnel". Only meaningful while a VPN path is up; under
+# WAN/zapret the routing checks above already name the real cause.
+if [ "$PATH_KIND" = vpn ] && [ -n "$VPN_CIDRS" ] && [ -n "$ACTIVE" ]; then
+    for _cidr in $(printf '%s' "$VPN_CIDRS" | tr ', ' '\n' | grep -v '^$'); do
+        _addr="${_cidr%/*}"
+        case "$_addr" in *.*.*.*) : ;; *) continue ;; esac
+        _dev="$(ip -4 route get "$_addr" mark "$WG_MARK" 2>/dev/null \
+            | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+        [ -n "$_dev" ] || continue
+        [ "$_dev" = "$ACTIVE" ] || add FIXABLE routing \
+            "VPN subnet $_cidr (site-to-site) not routed into the tunnel — marked traffic egresses '$_dev', not '$ACTIVE'" \
+            "run wg-split-apply (rebuilds the VPN set + routes)"
+    done
+fi
 
 # ---- lists -----------------------------------------------------------------
 list_row() {  # NAME ENABLED COUNT MIN FILE COUNTOK

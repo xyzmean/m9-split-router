@@ -11,6 +11,30 @@ optional **zapret** does DPI-bypass on WAN. Everything is configured locally via
               └▶ direct (WAN) ─▶ zapret DPI-bypass for RU/clearnet
 ```
 
+## What's new in 2.0
+
+- **Operator dashboard, split from settings.** The LuCI app is now two tabs:
+  **Status** (hero state, live routing chain, **live rx/tx per tunnel**, lists,
+  diagnostics, **failover timeline**) and **Settings** (the UCI form).
+- **One-click firewall fix.** Every firewall finding gets a **“Fix automatically”**
+  button (and a `wg-split-firewall check|fix <iface>` CLI) that creates/repairs the
+  tunnel’s zone — accept-all + masquerading + lan↔tunnel↔wan forwarding — modelled
+  on a known-good AmneziaWG zone. No more three `FAIL`s you have to solve by hand.
+- **Failover event journal.** Switch/recover/restart/fallback transitions are
+  recorded to a RAM ring buffer and shown as a timeline (`wg-split-doctor --events`).
+- **Least-privilege ubus.** LuCI now talks to a `wg-split` rpcd object
+  (`status`/`events`/`action`) instead of broad `file:exec` — the ACL grants only
+  those three methods.
+- **Site-to-site aware.** “VPN subnets” are labelled for peer LANs, and the doctor
+  flags a VPN subnet that isn’t actually routed into the tunnel.
+- **Transport-agnostic seam.** Endpoints carry a `type` (default `wg`); all
+  transport-specific logic goes through `ep_*` dispatch helpers so a future
+  sing-box (VLESS/Hysteria) backend drops in without touching the core.
+- **Release hygiene.** CI now runs `shellcheck` + `bats` unit tests; a uci-defaults
+  migration adds the new defaults to existing configs (fully backward-compatible).
+
+Configs from 1.7.x keep working unchanged — the UCI schema only grew, additively.
+
 ## What it does
 
 nftables marks → `ip rule` → table 200 → the active tunnel. The policy chains are
@@ -124,6 +148,8 @@ LAN forwarding, and the `ipsum` set above its minimum. The same flow applies to
 | `wg-split/files/usr/local/sbin/wg-split-failover` | failover state machine + procd daemon |
 | `wg-split/files/usr/local/sbin/wg-split-doctor` | structured diagnostics (text + `--json`) |
 | `wg-split/files/usr/local/sbin/wg-split-apply` | regenerate nft/dnsmasq layer from UCI |
+| `wg-split/files/usr/local/sbin/wg-split-firewall` | create/repair the tunnel firewall zone (`check`/`fix`) |
+| `wg-split/files/usr/libexec/rpcd/wg-split` | least-privilege ubus object (`status`/`events`/`action`) for LuCI |
 | `wg-split/files/usr/local/sbin/wg-split-update-{ipsum,ru,domains}` | list downloaders |
 | `wg-split/files/usr/local/sbin/wg-split-sync-nozapret` | rebuild zapret bypass set |
 | `wg-split/files/usr/local/lib/wg-split/common.sh` | shared helpers (loads UCI) |
