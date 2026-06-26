@@ -29,12 +29,27 @@ is_endpoint "$IFACE" || die "$IFACE is not a configured wg-split endpoint — re
 # the zone covering the 'wan' network, else the conventional 'wan'.
 wan_zone() { fw_zone_of_net wan 2>/dev/null || echo wan; }
 
+# Refuse to touch a SHARED infrastructure zone. If the endpoint was placed in the
+# same firewall zone as WAN (or LAN), zone == wan/lan and adding masq + reverse
+# (zone->lan) forwarding would open the ENTIRE WAN/LAN zone, not just the tunnel.
+# Echoes the role ("WAN"/"LAN") and returns 0 when $1 is such a shared zone.
+zone_is_shared() {  # zone-name
+    [ -n "$1" ] || return 1
+    [ "$1" = "$(wan_zone)" ]    && { echo WAN; return 0; }
+    [ "$1" = "$(fw_lan_zone)" ] && { echo LAN; return 0; }
+    return 1
+}
+
 # ---- check -----------------------------------------------------------------
 check_iface() {
     _miss=""
     _z="$(fw_zone_of_net "$IFACE" 2>/dev/null)" || _z=""
     if [ -z "$_z" ]; then
         echo "zone        : MISSING ($IFACE is in no firewall zone)"
+        return 1
+    fi
+    if _role="$(zone_is_shared "$_z")"; then
+        echo "zone        : SHARED ($_z is your $_role zone — give $IFACE its own firewall zone; fix refuses to modify a shared zone)"
         return 1
     fi
     echo "zone        : $_z"
@@ -85,6 +100,9 @@ ensure_masq() {  # zone-name
 # ---- fix -------------------------------------------------------------------
 fix_iface() {
     ZONE="$(fw_zone_of_net "$IFACE" 2>/dev/null)" || ZONE=""
+    if _role="$(zone_is_shared "$ZONE")"; then
+        die "$IFACE is in the shared '$ZONE' ($_role) firewall zone; give the tunnel its own zone before fixing — refusing to add masq/forwarding to a shared zone"
+    fi
     if [ -z "$ZONE" ]; then
         # New zone modelled on the reference AmneziaWG zone: accept-all + masq +
         # mtu_fix, carrying the endpoint network. Zone name = iface (the convention).
@@ -112,8 +130,18 @@ fix_iface() {
 
     if [ "$CHANGED" = 1 ]; then
         uci commit firewall
-        fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
-        log "firewall: applied zone/forwarding for $IFACE (zone=$ZONE lan=${_lz:-?} wan=$_wz)"
+        # A bare `fw4 reload` REPLACES table inet fw4, wiping the live policy/domain
+        # nft sets (ipsum/vpn/direct + dnsmasq resolve-time elements) — policy
+        # routing would break until the next failover tick. Delegate to
+        # wg-split-apply, which reloads fw4 AND re-runs its repopulation follow-up
+        # (regenerate ruleset, restart dnsmasq, run failover). Fall back to a plain
+        # reload only if apply is somehow unavailable.
+        if [ -x /usr/local/sbin/wg-split-apply ]; then
+            wg-split-apply >/dev/null 2>&1 || true
+        else
+            fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
+        fi
+        log "firewall: applied zone/forwarding for $IFACE (zone=$ZONE lan=${_lz:-?} wan=$_wz); re-applied policy"
         echo "fixed: zone=$ZONE lan=${_lz:-?} wan=$_wz"
     else
         echo "already complete: zone=$ZONE"

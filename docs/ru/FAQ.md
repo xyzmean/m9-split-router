@@ -19,7 +19,11 @@ doctor предупреждает о просадке счётчика `ru` то
 **В: Три FAIL про firewall (зона/masq/forwarding) — чинить вручную?**
 О: Нет. На каждом firewall-замечании вкладки «Статус» есть кнопка
 **«Починить автоматически»** — она создаёт/чинит зону туннеля (accept-all + masq +
-mtu_fix, forwarding lan↔туннель↔wan). Из CLI: `wg-split-firewall fix <iface>`.
+mtu_fix, forwarding lan↔туннель↔wan) и затем переприменяет политику
+(`wg-split-apply`, чтобы перезагрузка fw4 не оставила сеты пустыми). Из CLI:
+`wg-split-firewall fix <iface>`. Если туннель ошибочно помещён в **общую** зону
+WAN или LAN, починка **откажется** менять её — дайте туннелю отдельную зону
+firewall и повторите (иначе правились бы masq/forwarding всей зоны WAN/LAN).
 
 **В: Управляет ли wg-split ключами/пирами WireGuard?**
 О: Нет. Создайте туннельный интерфейс обычным образом в Network → Interfaces,
