@@ -10,6 +10,7 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMMON_SH="$REPO_ROOT/wg-split/files/usr/local/lib/wg-split/common.sh"
 DOCTOR_SH="$REPO_ROOT/wg-split/files/usr/local/sbin/wg-split-doctor"
+SYNC_SH="$REPO_ROOT/wg-split/files/usr/local/sbin/wg-split-sync-nozapret"
 
 # extract_fn FILE FNNAME -> prints the function's source.
 extract_fn() {

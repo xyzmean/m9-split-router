@@ -216,3 +216,34 @@ config_get() { eval "$1=\"\${cfg_${2}_${3}:-$4}\""; }
     run fw_zone_glob_covering tun0; [ "$status" -ne 0 ]   # nothing covers it
     run fw_zone_glob_covering eth0; [ "$status" -ne 0 ]   # exact device, not a glob
 }
+
+# ---- nozapret_current: idempotency guard (N1/N2) ---------------------------
+@test "nozapret_current skips when sig unchanged and set healthy" {
+    load_fn "$SYNC_SH" nozapret_current
+    run nozapret_current "v1:abc" "v1:abc" 46207 1000 0
+    [ "$status" -eq 0 ]
+}
+
+@test "nozapret_current rebuilds when signature changed" {
+    load_fn "$SYNC_SH" nozapret_current
+    run nozapret_current "v1:abc" "v1:xyz" 46207 1000 0
+    [ "$status" -eq 1 ]
+}
+
+@test "nozapret_current rebuilds when forced" {
+    load_fn "$SYNC_SH" nozapret_current
+    run nozapret_current "v1:abc" "v1:abc" 46207 1000 1
+    [ "$status" -eq 1 ]
+}
+
+@test "nozapret_current rebuilds when live set drained below min" {
+    load_fn "$SYNC_SH" nozapret_current
+    run nozapret_current "v1:abc" "v1:abc" 12 1000 0
+    [ "$status" -eq 1 ]
+}
+
+@test "nozapret_current rebuilds when no prior signature" {
+    load_fn "$SYNC_SH" nozapret_current
+    run nozapret_current "v1:abc" "" 46207 1000 0
+    [ "$status" -eq 1 ]
+}
