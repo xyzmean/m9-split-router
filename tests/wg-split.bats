@@ -247,3 +247,19 @@ config_get() { eval "$1=\"\${cfg_${2}_${3}:-$4}\""; }
     run nozapret_current "v1:abc" "" 46207 1000 0
     [ "$status" -eq 1 ]
 }
+
+# ---- ru_count_for_mode: report ru's real contribution per mode (N3) --------
+@test "ru_count_for_mode uses live set in full mode" {
+    load_fn "$DOCTOR_SH" ru_count_for_mode
+    [ "$(ru_count_for_mode full 44022 44030)" = "44022" ]
+}
+
+@test "ru_count_for_mode uses file count in blocklist mode" {
+    load_fn "$DOCTOR_SH" ru_count_for_mode
+    [ "$(ru_count_for_mode blocklist 0 44030)" = "44030" ]
+}
+
+@test "ru_count_for_mode uses file count in split mode" {
+    load_fn "$DOCTOR_SH" ru_count_for_mode
+    [ "$(ru_count_for_mode split 0 44030)" = "44030" ]
+}
