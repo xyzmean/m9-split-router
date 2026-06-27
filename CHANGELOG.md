@@ -50,8 +50,17 @@ fills in the new defaults idempotently.
 - Failover now brings endpoints up / restarts them through the `ep_*` dispatch
   helpers (identical behaviour for `wg`).
 
+### Fixed (field observations, 2026-06-27 prod assessment)
+- nozapret sync is now idempotent: the bypass set is rebuilt (and logged) only
+  when its contents change or the live set is drained, instead of every failover
+  tick — stops the `nozapret synced` log flood that was evicting syslog history
+  and the redundant ~71k-entry rebuild each tick (N1/N2).
+- doctor: in blocklist/split mode the `ru` list now reports its file prefix count
+  (its real contribution to nozapret) instead of the unused live set's `0`, and
+  every list row exposes `file_count` alongside the live-set `count` (N3/N4).
+
 ### Notes
 - In **blocklist/split** modes the `ru/cn` list is intentionally **not** wired as an
-  nft routing set (it only feeds the zapret bypass via its downloaded file), so the
-  dashboard showing the `ru` set at `0` live entries is expected and not a fault —
-  the doctor only flags a low count in `full` mode, where the set is actually used.
+  nft routing set (it only feeds the zapret bypass via its downloaded file). The
+  doctor reports the list's **file prefix count** here (its real contribution) and
+  only flags a low live-set count in `full` mode, where the set is actually used.
